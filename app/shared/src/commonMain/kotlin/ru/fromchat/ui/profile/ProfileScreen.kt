@@ -12,19 +12,25 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Chat
+import androidx.compose.material.icons.filled.AlternateEmail
 import androidx.compose.material.icons.filled.ArrowBack
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
+import androidx.compose.material.icons.filled.CalendarMonth
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Link
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.Divider
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MediumTopAppBar
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -34,17 +40,20 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.platform.ClipboardManager
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
-import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
+import com.pr0gramm3r101.components.Category
+import com.pr0gramm3r101.components.CategoryDefaults
+import com.pr0gramm3r101.components.ListItem
 import ru.fromchat.api.ApiClient
 import ru.fromchat.api.UserProfile
 import ru.fromchat.ui.chat.Avatar
+import ru.fromchat.ui.scaleOnPress
 
 private data class ProfileUiState(
     val profile: UserProfile? = null,
@@ -87,16 +96,28 @@ fun ProfileScreen(
         }
     }
 
+    val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
+
     Scaffold(
-        modifier = modifier,
+        modifier = modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
-            TopAppBar(
-                title = { Text(text = "Profile") },
+            MediumTopAppBar(
+                title = { Text("Profile") },
                 navigationIcon = {
-                    IconButton(onClick = onBack) {
-                        Icon(imageVector = Icons.Filled.ArrowBack, contentDescription = "Back")
+                    Box(
+                        modifier = Modifier
+                            .scaleOnPress(0.96f, onClick = onBack)
+                            .padding(12.dp),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Filled.ArrowBack,
+                            contentDescription = "Back",
+                            modifier = Modifier.size(24.dp)
+                        )
                     }
-                }
+                },
+                scrollBehavior = scrollBehavior
             )
         }
     ) { innerPadding ->
@@ -104,7 +125,6 @@ fun ProfileScreen(
             modifier = Modifier
                 .fillMaxSize()
                 .padding(innerPadding)
-                .padding(16.dp)
         ) {
             val errorMessage = state.error
             val profile = state.profile
@@ -117,9 +137,11 @@ fun ProfileScreen(
                 sharedAvatarKey != null
 
             Column(
-                modifier = Modifier.fillMaxSize(),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Top
+                modifier = Modifier
+                    .fillMaxSize()
+                    .verticalScroll(rememberScrollState())
+                    ,
+                horizontalAlignment = Alignment.CenterHorizontally
             ) {
                 when {
                     useSharedAvatar -> {
@@ -191,8 +213,7 @@ fun ProfileScreen(
 
                         Text(
                             text = displayName,
-                            style = MaterialTheme.typography.titleLarge,
-                            textAlign = TextAlign.Center
+                            style = MaterialTheme.typography.titleLarge
                         )
                         Spacer(modifier = Modifier.height(4.dp))
                         Text(
@@ -201,67 +222,119 @@ fun ProfileScreen(
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                         Spacer(modifier = Modifier.height(16.dp))
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            horizontalArrangement = Arrangement.spacedBy(12.dp)
-                        ) {
-                            Button(
-                                onClick = { onChat(profile.id) },
-                                modifier = Modifier.weight(1f)
+
+                        Category(Modifier.padding(top = 0.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(0.dp)
                             ) {
-                                Text(text = "Chat")
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .scaleOnPress(0.96f) { onChat(profile.id) },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        modifier = Modifier.padding(vertical = 16.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.AutoMirrored.Filled.Chat,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(28.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            text = "Chat",
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                    }
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .scaleOnPress(0.96f) {
+                                            clipboardManager.setText(AnnotatedString(profileLink))
+                                            state = state.copy(linkStatus = "Link copied!")
+                                        },
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Column(
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        modifier = Modifier.padding(vertical = 16.dp)
+                                    ) {
+                                        Icon(
+                                            imageVector = Icons.Filled.Link,
+                                            contentDescription = null,
+                                            modifier = Modifier.size(28.dp)
+                                        )
+                                        Spacer(modifier = Modifier.height(6.dp))
+                                        Text(
+                                            text = "Link",
+                                            style = MaterialTheme.typography.bodyMedium
+                                        )
+                                    }
+                                }
                             }
-                            Button(
-                                onClick = {
-                                    clipboardManager.setText(AnnotatedString(profileLink))
-                                    state = state.copy(linkStatus = "Link copied!")
+                        }
+
+                        state.linkStatus?.let { status ->
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = status,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.primary
+                            )
+                        }
+
+                        Category(Modifier.padding(top = 16.dp), title = "Details") {
+                            ListItem(
+                                headline = "Username",
+                                supportingText = profile.username,
+                                leadingContent = {
+                                    Icon(
+                                        imageVector = Icons.Filled.AlternateEmail,
+                                        contentDescription = null
+                                    )
                                 },
-                                modifier = Modifier.weight(1f)
-                            ) {
-                                Text(text = "Link")
-                            }
-                        }
+                                divider = true,
+                                dividerColor = CategoryDefaults.dividerColor,
+                                dividerThickness = CategoryDefaults.dividerThickness
+                            )
 
-                        state.linkStatus?.let {
-                            Spacer(modifier = Modifier.height(8.dp))
-                            Text(text = it, style = MaterialTheme.typography.bodySmall)
-                        }
-
-                        Spacer(modifier = Modifier.height(24.dp))
-
-                        Card(modifier = Modifier.fillMaxWidth()) {
-                            Column(modifier = Modifier.padding(16.dp)) {
-                                ProfileField(label = "Username", value = profile.username)
-                                Divider(modifier = Modifier.padding(vertical = 8.dp))
-                                ProfileField(label = "Bio", value = profile.bio ?: "No bio")
-                                Divider(modifier = Modifier.padding(vertical = 8.dp))
-                                ProfileField(label = "Member since", value = profile.createdAt ?: "Unknown")
-                                Divider(modifier = Modifier.padding(vertical = 8.dp))
-                                ProfileField(
-                                    label = "Status",
-                                    value = if ((profile.deleted == true) || (profile.suspended == true)) "Suspended/Deleted" else "Active"
+                            if (!profile.bio.isNullOrBlank()) {
+                                ListItem(
+                                    headline = "Bio",
+                                    supportingText = profile.bio,
+                                    divider = true,
+                                    dividerColor = CategoryDefaults.dividerColor,
+                                    dividerThickness = CategoryDefaults.dividerThickness,
+                                    leadingContent = {
+                                        Icon(
+                                            imageVector = Icons.Filled.Info,
+                                            contentDescription = null
+                                        )
+                                    }
                                 )
                             }
+
+                            ListItem(
+                                headline = "Member since",
+                                supportingText = profile.createdAt,
+                                divider = true,
+                                dividerColor = CategoryDefaults.dividerColor,
+                                dividerThickness = CategoryDefaults.dividerThickness,
+                                leadingContent = {
+                                    Icon(
+                                        imageVector = Icons.Filled.CalendarMonth,
+                                        contentDescription = null
+                                    )
+                                }
+                            )
                         }
                     }
                 }
             }
         }
-    }
-}
-
-@Composable
-private fun ProfileField(label: String, value: String) {
-    Column(modifier = Modifier.fillMaxWidth()) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodySmall,
-            color = Color.Gray
-        )
-        Spacer(modifier = Modifier.height(2.dp))
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyMedium
-        )
     }
 }
