@@ -72,7 +72,9 @@ import ru.fromchat.api.WebSocketMessage
 import ru.fromchat.api.WebSocketUpdatesData
 import ru.fromchat.back
 import ru.fromchat.core.Logger
+import ru.fromchat.ui.HapticFeedbackEvent
 import ru.fromchat.ui.LocalNavController
+import ru.fromchat.ui.rememberHapticFeedback
 import ru.fromchat.ui.scaleOnPress
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalHazeMaterialsApi::class)
@@ -116,6 +118,7 @@ fun ChatScreen(
     val scrollBehavior = TopAppBarDefaults.pinnedScrollBehavior()
     val listState = rememberLazyListState()
     val scope = rememberCoroutineScope()
+    val haptic = rememberHapticFeedback()
     val navController = LocalNavController.current
     val profileUserId = panelState.profileUserId
     val hazeState = rememberHazeState(blurEnabled = true)
@@ -389,6 +392,7 @@ fun ChatScreen(
                             scope.launch {
                                 panel.sendMessageWithImmediateDisplay(text, replyTo?.id)
                                 replyTo = null
+                                haptic(HapticFeedbackEvent.MessageSent)
                             }
                         }
                         inputText = ""

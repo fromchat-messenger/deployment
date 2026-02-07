@@ -15,6 +15,8 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import ru.fromchat.ui.BackHandler
+import ru.fromchat.ui.HapticFeedbackEvent
+import ru.fromchat.ui.rememberHapticFeedback
 import ru.fromchat.ui.profile.ProfileScreen
 
 private const val TRANSITION_MS = 320
@@ -27,11 +29,13 @@ fun DmContainerScreen(
 ) {
     var showProfile by remember { mutableStateOf(false) }
     val scope = rememberCoroutineScope()
+    val haptic = rememberHapticFeedback()
     val panel = remember(otherUserId) {
         DmPanelCache.getOrCreate(otherUserId, scope)
     }
 
     BackHandler(enabled = showProfile) {
+        haptic(HapticFeedbackEvent.ProfileClosed)
         showProfile = false
     }
 
@@ -51,7 +55,10 @@ fun DmContainerScreen(
                 DmScreen(
                     panel = panel,
                     modifier = Modifier.fillMaxSize(),
-                    onTitleClick = { showProfile = true },
+                    onTitleClick = {
+                        haptic(HapticFeedbackEvent.ProfileOpened)
+                        showProfile = true
+                    },
                     sharedTransitionScope = this@SharedTransitionLayout,
                     animatedVisibilityScope = this@AnimatedContent,
                     sharedAvatarKey = sharedAvatarKey
@@ -59,8 +66,14 @@ fun DmContainerScreen(
             } else {
                 ProfileScreen(
                     userId = otherUserId,
-                    onBack = { showProfile = false },
-                    onChat = { _ -> showProfile = false },
+                    onBack = {
+                        haptic(HapticFeedbackEvent.ProfileClosed)
+                        showProfile = false
+                    },
+                    onChat = { _ ->
+                        haptic(HapticFeedbackEvent.ProfileClosed)
+                        showProfile = false
+                    },
                     modifier = Modifier.fillMaxSize(),
                     sharedTransitionScope = this@SharedTransitionLayout,
                     animatedVisibilityScope = this@AnimatedContent,
