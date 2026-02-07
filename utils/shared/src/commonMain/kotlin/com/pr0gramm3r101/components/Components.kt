@@ -101,7 +101,7 @@ fun ListItem(
     bodyModifier: Modifier = Modifier,
     headline: String,
     supportingText: String? = null,
-    leadingContent: (@Composable ConstraintLayoutScope.() -> Unit)? = null,
+    leadingContent: (@Composable () -> Unit)? = null,
     trailingContent: (@Composable ConstraintLayoutScope.() -> Unit)? = null,
     enabled: Boolean = true,
     divider: Boolean = false,
@@ -147,7 +147,7 @@ fun ListItem(
                 @Composable
                 fun leadingBody() {
                     if (leadingContent != null) {
-                        ConstraintLayout(
+                        Box(
                             modifier = Modifier
                                 .constrainAs(leading) {
                                     top link parent.top
@@ -162,8 +162,10 @@ fun ListItem(
                                     top = 8.dp,
                                     bottom = 8.dp
                                 ),
-                            content = leadingContent
-                        )
+                            contentAlignment = Alignment.Center
+                        ) {
+                            leadingContent()
+                        }
                     }
                     ListItem(
                         headlineContent = { Text(headline) },
@@ -281,7 +283,7 @@ inline fun SwitchListItem(
     modifier: Modifier = Modifier,
     headline: String,
     supportingText: String? = null,
-    noinline leadingContent: (@Composable ConstraintLayoutScope.() -> Unit)? = null,
+    noinline leadingContent: (@Composable () -> Unit)? = null,
     checked: Boolean,
     noinline onCheckedChange: (Boolean) -> Unit,
     crossinline listItemOnClick: () -> Unit = { onCheckedChange(!checked) },
@@ -323,7 +325,7 @@ inline fun SeparatedSwitchListItem(
     bodyModifier: Modifier = Modifier,
     headline: String,
     supportingText: String? = null,
-    noinline leadingContent: (@Composable ConstraintLayoutScope.() -> Unit)? = null,
+    noinline leadingContent: (@Composable () -> Unit)? = null,
     checked: Boolean,
     noinline onCheckedChange: (Boolean) -> Unit,
     noinline bodyOnClick: () -> Unit,

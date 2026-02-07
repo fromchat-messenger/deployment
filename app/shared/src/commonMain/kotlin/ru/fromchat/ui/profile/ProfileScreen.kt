@@ -2,6 +2,9 @@ package ru.fromchat.ui.profile
 
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.foundation.LocalIndication
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,10 +24,12 @@ import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CalendarMonth
 import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Link
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
+import androidx.compose.material3.LocalContentColor
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MediumTopAppBar
 import androidx.compose.material3.Scaffold
@@ -32,6 +37,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -223,15 +229,32 @@ fun ProfileScreen(
                         )
                         Spacer(modifier = Modifier.height(16.dp))
 
-                        Category(Modifier.padding(top = 0.dp)) {
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.spacedBy(0.dp)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(start = 16.dp, end = 16.dp, bottom = 20.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            val chatSource = remember { MutableInteractionSource() }
+                            Card(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .scaleOnPress(
+                                        scale = 0.90f,
+                                        interactionSource = chatSource,
+                                        clipShape = MaterialTheme.shapes.extraLarge
+                                    ),
+                                shape = MaterialTheme.shapes.extraLarge,
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
                             ) {
                                 Box(
                                     modifier = Modifier
-                                        .weight(1f)
-                                        .scaleOnPress(0.96f) { onChat(profile.id) },
+                                        .fillMaxWidth()
+                                        .clickable(
+                                            interactionSource = chatSource,
+                                            indication = LocalIndication.current,
+                                            onClick = { onChat(profile.id) }
+                                        ),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Column(
@@ -250,13 +273,30 @@ fun ProfileScreen(
                                         )
                                     }
                                 }
+                            }
+                            val linkSource = remember { MutableInteractionSource() }
+                            Card(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .scaleOnPress(
+                                        scale = 0.90f,
+                                        interactionSource = linkSource,
+                                        clipShape = MaterialTheme.shapes.extraLarge
+                                    ),
+                                shape = MaterialTheme.shapes.extraLarge,
+                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+                            ) {
                                 Box(
                                     modifier = Modifier
-                                        .weight(1f)
-                                        .scaleOnPress(0.96f) {
-                                            clipboardManager.setText(AnnotatedString(profileLink))
-                                            state = state.copy(linkStatus = "Link copied!")
-                                        },
+                                        .fillMaxWidth()
+                                        .clickable(
+                                            interactionSource = linkSource,
+                                            indication = LocalIndication.current,
+                                            onClick = {
+                                                clipboardManager.setText(AnnotatedString(profileLink))
+                                                state = state.copy(linkStatus = "Link copied!")
+                                            }
+                                        ),
                                     contentAlignment = Alignment.Center
                                 ) {
                                     Column(
@@ -292,10 +332,12 @@ fun ProfileScreen(
                                 headline = "Username",
                                 supportingText = profile.username,
                                 leadingContent = {
-                                    Icon(
-                                        imageVector = Icons.Filled.AlternateEmail,
-                                        contentDescription = null
-                                    )
+                                    CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurface) {
+                                        Icon(
+                                            imageVector = Icons.Filled.AlternateEmail,
+                                            contentDescription = null
+                                        )
+                                    }
                                 },
                                 divider = true,
                                 dividerColor = CategoryDefaults.dividerColor,
@@ -310,10 +352,12 @@ fun ProfileScreen(
                                     dividerColor = CategoryDefaults.dividerColor,
                                     dividerThickness = CategoryDefaults.dividerThickness,
                                     leadingContent = {
-                                        Icon(
-                                            imageVector = Icons.Filled.Info,
-                                            contentDescription = null
-                                        )
+                                        CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurface) {
+                                            Icon(
+                                                imageVector = Icons.Filled.Info,
+                                                contentDescription = null
+                                            )
+                                        }
                                     }
                                 )
                             }
@@ -325,10 +369,12 @@ fun ProfileScreen(
                                 dividerColor = CategoryDefaults.dividerColor,
                                 dividerThickness = CategoryDefaults.dividerThickness,
                                 leadingContent = {
-                                    Icon(
-                                        imageVector = Icons.Filled.CalendarMonth,
-                                        contentDescription = null
-                                    )
+                                    CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurface) {
+                                        Icon(
+                                            imageVector = Icons.Filled.CalendarMonth,
+                                            contentDescription = null
+                                        )
+                                    }
                                 }
                             )
                         }

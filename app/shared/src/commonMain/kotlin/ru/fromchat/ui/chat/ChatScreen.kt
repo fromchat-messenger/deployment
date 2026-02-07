@@ -3,15 +3,10 @@ package ru.fromchat.ui.chat
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.SharedTransitionScope
-import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
-import androidx.compose.foundation.interaction.PressInteraction
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -54,8 +49,6 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.TransformOrigin
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
@@ -80,6 +73,7 @@ import ru.fromchat.api.WebSocketUpdatesData
 import ru.fromchat.back
 import ru.fromchat.core.Logger
 import ru.fromchat.ui.LocalNavController
+import ru.fromchat.ui.scaleOnPress
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalHazeMaterialsApi::class)
 @Composable
@@ -246,36 +240,14 @@ fun ChatScreen(
         topBar = {
             TopAppBar(
                 title = {
-                    val titleInteractionSource = remember { MutableInteractionSource() }
-                    var titlePressed by remember { mutableStateOf(false) }
-                    LaunchedEffect(titleInteractionSource) {
-                        titleInteractionSource.interactions.collect { interaction ->
-                            when (interaction) {
-                                is PressInteraction.Press -> titlePressed = true
-                                is PressInteraction.Release -> titlePressed = false
-                            }
-                        }
-                    }
-                    val titleScale by animateFloatAsState(
-                        targetValue = if (titlePressed) 0.96f else 1f,
-                        animationSpec = tween(durationMillis = 100),
-                        label = "title_scale"
-                    )
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .graphicsLayer(
-                                scaleX = titleScale,
-                                scaleY = titleScale,
-                                transformOrigin = TransformOrigin.Center
-                            )
-                            .then(
-                                if (profileUserId != null && onTitleClick != null) {
-                                    Modifier.clickable(
-                                        interactionSource = titleInteractionSource,
-                                        indication = null
-                                    ) { onTitleClick() }
-                                } else Modifier
+                            .scaleOnPress(
+                                scale = 0.96f,
+                                onClick = if (profileUserId != null && onTitleClick != null) {
+                                    { onTitleClick() }
+                                } else null
                             ),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
