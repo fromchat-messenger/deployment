@@ -25,6 +25,7 @@ kotlin {
         iosTarget.binaries.framework {
             baseName = "ComposeApp"
             isStatic = true
+            linkerOpts("-framework", "UIKit")
         }
     }
 
@@ -77,12 +78,15 @@ kotlin {
 
             implementation(project(":utils:shared"))
             implementation(libs.krypto)
+            implementation(libs.cryptography.core)
+            implementation(libs.cryptography.provider.optimal)
         }
 
         iosMain.dependencies {
             implementation(libs.jetbrains.kotlinx.io.bytestring)
             implementation(libs.jetbrains.kotlinx.coroutines.core)
             implementation(libs.ktor.client.darwin)
+            implementation("com.ionspin.kotlin:multiplatform-crypto-libsodium-bindings:0.9.5")
         }
     }
 }

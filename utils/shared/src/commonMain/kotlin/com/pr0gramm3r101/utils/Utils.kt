@@ -176,3 +176,8 @@ operator fun PaddingValues.plus(other: PaddingValues) = PaddingValues(
 )
 
 expect val materialYouAvailable: Boolean
+
+inline fun <T> T.require( message: String, condition: (T) -> Boolean): T {
+    require(condition(this)) { message }
+    return this
+}
