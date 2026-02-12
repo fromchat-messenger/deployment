@@ -66,7 +66,7 @@ class DmPanel(
     }
 
     override suspend fun sendMessage(content: String, replyToId: Int?, clientMessageId: String?) {
-        ApiClient.sendDm(recipientId = otherUserId, plaintext = content)
+        ApiClient.sendDm(recipientId = otherUserId, plaintext = content, replyToId = replyToId)
     }
 
     override suspend fun loadMessages() {
@@ -80,6 +80,12 @@ class DmPanel(
                     createMessage(envelope, plaintext)
                 }
             }.forEach { addMessage(it) }
+            response.messages.forEach { envelope ->
+                if (envelope.replyToId != null) {
+                    val replyTo = _state.messages.find { it.id == envelope.replyToId }
+                    updateMessage(envelope.id) { it.copy(reply_to = replyTo) }
+                }
+            }
             setHasMoreMessages(false)
         }.onFailure { error ->
             Logger.e("DmPanel", "Failed to load DM history: ${error.message}", error)
@@ -94,6 +100,7 @@ class DmPanel(
     override suspend fun handleWebSocketMessage(message: WebSocketMessage) {
         when (message.type) {
             "dmNew" -> message.data?.let { processEnvelope(it) }
+            "dmEdited" -> message.data?.let { processEditedEnvelope(it) }
             "dmTyping" -> message.data?.let { data ->
                 val obj = data.jsonObject
                 val userId = obj["userId"]?.jsonPrimitive?.content?.toIntOrNull()
@@ -112,6 +119,7 @@ class DmPanel(
                     val type = obj["type"]?.jsonPrimitive?.content
                     when (type) {
                         "dmNew" -> obj["data"]?.let { processEnvelope(it) }
+                        "dmEdited" -> obj["data"]?.let { processEditedEnvelope(it) }
                         "dmTyping" -> obj["data"]?.let { data ->
                             val dataObj = data.jsonObject
                             val userId = dataObj["userId"]?.jsonPrimitive?.content?.toIntOrNull()
@@ -139,6 +147,25 @@ class DmPanel(
             val plaintext = runCatching { decryptEnvelope(envelope, currentUserId) }.getOrNull()
             if (plaintext != null) {
                 addMessage(createMessage(envelope, plaintext))
+                if (envelope.replyToId != null) {
+                    val replyTo = _state.messages.find { it.id == envelope.replyToId }
+                    updateMessage(envelope.id) { it.copy(reply_to = replyTo) }
+                }
+            }
+        }
+    }
+
+    private fun processEditedEnvelope(element: JsonElement) {
+        val envelope = runCatching {
+            json.decodeFromJsonElement(DmEnvelope.serializer(), element)
+        }.getOrNull() ?: return
+        if (envelope.senderId != otherUserId && envelope.recipientId != otherUserId) return
+        scope.launch(Dispatchers.Default) {
+            val plaintext = runCatching { decryptEnvelope(envelope, currentUserId) }.getOrNull()
+            if (plaintext != null) {
+                updateMessage(envelope.id) { it.copy(content = plaintext, is_edited = true) }
+            } else {
+                updateMessage(envelope.id) { it.copy(is_edited = true) }
             }
         }
     }
@@ -165,7 +192,15 @@ class DmPanel(
         )
     }
 
-    override suspend fun handleEditMessage(messageId: Int, content: String) {}
+    override suspend fun handleEditMessage(messageId: Int, content: String) {
+        runCatching {
+            ApiClient.editDm(messageId = messageId, recipientId = otherUserId, plaintext = content)
+        }.onSuccess {
+            updateMessage(messageId) { msg ->
+                msg.copy(content = content, is_edited = true)
+            }
+        }
+    }
 
     override suspend fun handleDeleteMessage(messageId: Int) {}
 

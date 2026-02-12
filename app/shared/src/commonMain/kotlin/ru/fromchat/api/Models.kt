@@ -174,7 +174,7 @@ data class DmEnvelope(
     @SerialName("ciphertext_b64") val ciphertextB64: String,
     @SerialName("wrapped_mek_b64") val wrappedMekB64: String? = null,
     val timestamp: String,
-    val replyToId: Int? = null,
+    @SerialName("reply_to_id") val replyToId: Int? = null,
     val files: List<DmFile>? = null
 )
 
