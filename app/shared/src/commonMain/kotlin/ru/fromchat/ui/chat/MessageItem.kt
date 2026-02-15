@@ -44,6 +44,20 @@ import ru.fromchat.api.Message
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
+private fun isImageFilename(name: String): Boolean =
+    name.endsWith(".png", true) || name.endsWith(".jpg", true) ||
+        name.endsWith(".jpeg", true) || name.endsWith(".gif", true) || name.endsWith(".webp", true)
+
+private fun isMessageCorrupted(message: Message): Boolean {
+    val files = message.files ?: return false
+    return files.withIndex().any { (index, file) ->
+        isImageFilename(file.name) && (
+            message.dmEnvelope == null ||
+            message.fileThumbnails?.getOrNull(index)?.isBlank() != false
+        )
+    }
+}
+
 @OptIn(ExperimentalTime::class)
 @Composable
 fun MessageItem(
@@ -200,30 +214,46 @@ fun MessageItem(
                                 }
                             }
 
-                            // Attachments (images/files)
-                            if (message.pendingFileUri != null) {
-                                AttachmentPreview(
-                                    file = null,
-                                    dmEnvelope = null,
-                                    currentUserId = null,
-                                    pendingFileUri = message.pendingFileUri,
-                                    isUploading = message.uploadProgress != null,
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                            // Attachments (images/files) or corrupted message
+                            if (isMessageCorrupted(message)) {
+                                Text(
+                                    text = "_This message is corrupted and cannot be displayed.",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (isAuthor) {
+                                        Color.White.copy(alpha = 0.8f)
+                                    } else {
+                                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
+                                    },
+                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
                                 )
+                            } else {
+                                if (message.pendingFileUri != null) {
+                                    AttachmentPreview(
+                                        file = null,
+                                        dmEnvelope = null,
+                                        currentUserId = null,
+                                        pendingFileUri = message.pendingFileUri,
+                                        isUploading = message.uploadProgress != null,
+                                        isAuthor = isAuthor,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                                    )
+                                }
+                                message.files?.forEachIndexed { index, file ->
+                                    AttachmentPreview(
+                                        file = file,
+                                        dmEnvelope = message.dmEnvelope,
+                                        currentUserId = currentUserId,
+                                        pendingFileUri = null,
+                                        isUploading = false,
+                                        fileThumbnail = message.fileThumbnails?.getOrNull(index)?.takeIf { it.isNotBlank() },
+                                        fileAspectRatio = message.fileAspectRatios?.getOrNull(index)?.takeIf { it > 0f },
+                                        fileSizeBytes = message.fileSizes?.getOrNull(index),
+                                        isAuthor = isAuthor,
+                                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+                                    )
+                                }
                             }
-                            message.files?.forEachIndexed { index, file ->
-                                AttachmentPreview(
-                                    file = file,
-                                    dmEnvelope = message.dmEnvelope,
-                                    currentUserId = currentUserId,
-                                    pendingFileUri = null,
-                                    isUploading = false,
-                                    fileThumbnail = message.fileThumbnails?.getOrNull(index)?.takeIf { it.isNotBlank() },
-                                    fileAspectRatio = message.fileAspectRatios?.getOrNull(index)?.takeIf { it > 0f },
-                                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
-                                )
-                            }
-                            if (message.content.isNotBlank()) {
+                            if (message.content.isNotBlank() && !isMessageCorrupted(message)) {
                                 Text(
                                     text = message.content,
                                     style = MaterialTheme.typography.bodyMedium,

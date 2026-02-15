@@ -7,17 +7,21 @@ import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachFile
-import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Download
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
@@ -34,8 +38,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.blur
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
 import coil3.compose.rememberAsyncImagePainter
 import com.pr0gramm3r101.utils.conditional
@@ -63,6 +69,9 @@ fun AttachmentPreview(
     isUploading: Boolean,
     fileThumbnail: String? = null,
     fileAspectRatio: Float? = null,
+    fileSizeBytes: Long? = null,
+    onFileClick: (() -> Unit)? = null,
+    isAuthor: Boolean = false,
     modifier: Modifier = Modifier
 ) {
     val isImage = when {
@@ -77,53 +86,81 @@ fun AttachmentPreview(
         else -> false
     }
 
-    Box(
-        modifier = modifier
-            .conditional(
-                fileAspectRatio != null && fileAspectRatio > 0f,
-                `if` = {
-                    Modifier
-                        .aspectRatio(fileAspectRatio!!)
-                        .sizeIn(maxWidth = IMAGE_SIZE, maxHeight = IMAGE_SIZE)
-                },
-                `else` = {
-                    Modifier.size(IMAGE_SIZE)
-                }
+    val isFile = file != null && !isImage
+    val isImageWithThumb = file != null && isImage && dmEnvelope != null && !fileThumbnail.isNullOrBlank()
+    val isPendingImage = pendingFileUri != null && isImage
+    val isPendingFile = pendingFileUri != null && !isImage
+
+    when {
+        isFile -> {
+            FileIconContent(
+                filename = file!!.name,
+                sizeBytes = fileSizeBytes,
+                onClick = onFileClick,
+                isAuthor = isAuthor,
+                modifier = modifier
             )
-            .clip(RoundedCornerShape(IMAGE_RADIUS))
-            .background(MaterialTheme.colorScheme.surfaceVariant),
-        contentAlignment = Alignment.Center
-    ) {
-        when {
-            pendingFileUri != null -> {
-                Logger.d("AttachmentPreview", "Rendering: pendingFileUri, isUploading=$isUploading")
-                PendingImageContent(
-                    uri = pendingFileUri,
-                    isUploading = isUploading,
-                    isImage = isImage
-                )
-            }
-            file != null && isImage && dmEnvelope != null && !fileThumbnail.isNullOrBlank() -> {
-                Logger.d("AttachmentPreview", "Rendering: DecryptedImageContent file=${file.name} thumbLen=${fileThumbnail.length} aspectRatio=$fileAspectRatio")
+        }
+        isPendingFile -> {
+            FileIconContent(
+                filename = "File",
+                sizeBytes = null,
+                onClick = null,
+                isAuthor = isAuthor,
+                modifier = modifier
+            )
+        }
+        isImageWithThumb -> {
+            Box(
+                modifier = modifier
+                    .conditional(
+                        fileAspectRatio != null && fileAspectRatio!! > 0f,
+                        `if` = {
+                            Modifier
+                                .aspectRatio(fileAspectRatio!!)
+                                .sizeIn(maxWidth = IMAGE_SIZE, maxHeight = IMAGE_SIZE)
+                                .clip(RoundedCornerShape(IMAGE_RADIUS))
+                        },
+                        `else` = {
+                            Modifier
+                                .size(IMAGE_SIZE)
+                                .clip(RoundedCornerShape(IMAGE_RADIUS))
+                        }
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
                 DecryptedImageContent(
-                    file = file,
-                    envelope = dmEnvelope,
+                    file = file!!,
+                    envelope = dmEnvelope!!,
                     currentUserId = currentUserId,
-                    thumbnailBase64 = fileThumbnail,
+                    thumbnailBase64 = fileThumbnail!!,
                     aspectRatio = fileAspectRatio
                 )
             }
-            file != null && !isImage -> {
-                Logger.d("AttachmentPreview", "Rendering: FileIconContent file=${file.name}")
-                FileIconContent(filename = file.name)
-            }
-            else -> {
-                Logger.d("AttachmentPreview", "Rendering: fallback Icon (file=$file, isImage=$isImage, hasEnvelope=${dmEnvelope != null}, thumbBlank=${fileThumbnail.isNullOrBlank()})")
-                Icon(
-                    imageVector = Icons.Default.Image,
-                    contentDescription = null,
-                    modifier = Modifier.size(48.dp),
-                    tint = MaterialTheme.colorScheme.onSurfaceVariant
+        }
+        isPendingImage -> {
+            Box(
+                modifier = modifier
+                    .conditional(
+                        fileAspectRatio != null && fileAspectRatio!! > 0f,
+                        `if` = {
+                            Modifier
+                                .aspectRatio(fileAspectRatio!!)
+                                .sizeIn(maxWidth = IMAGE_SIZE, maxHeight = IMAGE_SIZE)
+                                .clip(RoundedCornerShape(IMAGE_RADIUS))
+                        },
+                        `else` = {
+                            Modifier
+                                .size(IMAGE_SIZE)
+                                .clip(RoundedCornerShape(IMAGE_RADIUS))
+                        }
+                    ),
+                contentAlignment = Alignment.Center
+            ) {
+                PendingImageContent(
+                    uri = pendingFileUri!!,
+                    isUploading = isUploading,
+                    isImage = true
                 )
             }
         }
@@ -285,23 +322,64 @@ private fun DecryptedImageContent(
     }
 }
 
+private fun formatFileSize(bytes: Long): String {
+    return when {
+        bytes < 1024 -> "$bytes B"
+        bytes < 1024 * 1024 -> "${bytes / 1024} KB"
+        bytes < 1024 * 1024 * 1024 -> "${bytes / (1024 * 1024)} MB"
+        else -> "${bytes / (1024 * 1024 * 1024)} GB"
+    }
+}
+
 @Composable
-private fun FileIconContent(filename: String) {
-    Column(
-        modifier = Modifier.padding(16.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+private fun FileIconContent(
+    filename: String,
+    sizeBytes: Long?,
+    onClick: (() -> Unit)?,
+    isAuthor: Boolean,
+    modifier: Modifier = Modifier
+) {
+    val contentColor = if (isAuthor) Color.White else MaterialTheme.colorScheme.onSurface
+    val circleBackground = if (isAuthor) Color.White else MaterialTheme.colorScheme.primary
+    val iconTint = if (isAuthor) MaterialTheme.colorScheme.primary else Color.White
+    Row(
+        modifier = modifier
+            .widthIn(max = 240.dp)
+            .padding(vertical = 8.dp, horizontal = 4.dp)
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(
-            imageVector = Icons.Default.AttachFile,
-            contentDescription = null,
-            modifier = Modifier.size(40.dp),
-            tint = MaterialTheme.colorScheme.onSurfaceVariant
-        )
-        Text(
-            text = filename.take(20) + if (filename.length > 20) "…" else "",
-            style = MaterialTheme.typography.labelSmall,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-            maxLines = 2
-        )
+        Box(
+            modifier = Modifier
+                .size(40.dp)
+                .background(circleBackground, RoundedCornerShape(20.dp)),
+            contentAlignment = Alignment.Center
+        ) {
+            Icon(
+                imageVector = Icons.Default.Download,
+                contentDescription = null,
+                modifier = Modifier.size(22.dp),
+                tint = iconTint
+            )
+        }
+        Column(
+            modifier = Modifier.padding(start = 12.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp)
+        ) {
+            Text(
+                text = filename.take(70) + if (filename.length > 70) "…" else "",
+                style = MaterialTheme.typography.bodyMedium,
+                color = contentColor,
+                maxLines = 2
+            )
+            if (sizeBytes != null) {
+                Text(
+                    text = formatFileSize(sizeBytes),
+                    style = MaterialTheme.typography.labelSmall,
+                    fontSize = 12.sp,
+                    color = contentColor.copy(alpha = 0.8f)
+                )
+            }
+        }
     }
 }

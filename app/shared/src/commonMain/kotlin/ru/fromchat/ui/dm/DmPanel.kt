@@ -176,13 +176,14 @@ class DmPanel(
         scope.launch(Dispatchers.Default) {
             val plaintext = runCatching { decryptEnvelope(envelope, currentUserId) }.getOrNull()
             if (plaintext != null) {
-                val (content, fileThumbnails, fileAspectRatios) = parseDecryptedContent(plaintext)
+                val dec = parseDecryptedContent(plaintext)
                 updateMessage(envelope.id) {
                     it.copy(
-                        content = content,
+                        content = dec.text,
                         is_edited = true,
-                        fileThumbnails = fileThumbnails ?: it.fileThumbnails,
-                        fileAspectRatios = fileAspectRatios ?: it.fileAspectRatios
+                        fileThumbnails = dec.thumbnails ?: it.fileThumbnails,
+                        fileAspectRatios = dec.aspectRatios ?: it.fileAspectRatios,
+                        fileSizes = dec.fileSizes ?: it.fileSizes
                     )
                 }
             } else {
@@ -191,11 +192,18 @@ class DmPanel(
         }
     }
 
-    private fun parseDecryptedContent(plaintext: String): Triple<String, List<String>?, List<Float>?> {
+    private data class DecryptedContent(
+        val text: String,
+        val thumbnails: List<String>?,
+        val aspectRatios: List<Float>?,
+        val fileSizes: List<Long>?
+    )
+
+    private fun parseDecryptedContent(plaintext: String): DecryptedContent {
         return runCatching {
             val obj = json.parseToJsonElement(plaintext).jsonObject
-            val text = obj["text"]?.jsonPrimitive?.content ?: return@runCatching Triple(plaintext, null, null)
-            val thumbArr = obj["fileThumbnails"]?.jsonArray ?: return@runCatching Triple(text, null, null)
+            val text = obj["text"]?.jsonPrimitive?.content ?: return@runCatching DecryptedContent(plaintext, null, null, null)
+            val thumbArr = obj["fileThumbnails"]?.jsonArray ?: return@runCatching DecryptedContent(text, null, null, null)
             val thumbnails = thumbArr.map { it.jsonPrimitive.content }
             val arArr = obj["fileAspectRatios"]?.jsonArray
             val aspectRatios = arArr?.mapNotNull { elem ->
@@ -206,16 +214,18 @@ class DmPanel(
                     if (w != null && h != null && h > 0) w.toFloat() / h else null
                 } else null
             }?.takeIf { it.size == thumbnails.size }
-            Logger.d("DmPanel", "parseDecryptedContent: thumbnails=${thumbnails.size} [${thumbnails.map { "len=${it.length}" }.joinToString()}], aspectRatios=${aspectRatios?.joinToString() ?: "null"}")
-            Triple(text, thumbnails.ifEmpty { null }, aspectRatios)
+            val sizesArr = obj["fileSizes"]?.jsonArray
+            val fileSizes = sizesArr?.mapNotNull { (it as? JsonPrimitive)?.content?.toLongOrNull() }?.takeIf { it.size == thumbnails.size }
+            Logger.d("DmPanel", "parseDecryptedContent: thumbnails=${thumbnails.size}, aspectRatios=${aspectRatios?.size}, fileSizes=${fileSizes?.size}")
+            DecryptedContent(text, thumbnails.ifEmpty { null }, aspectRatios, fileSizes)
         }.getOrElse {
             Logger.d("DmPanel", "parseDecryptedContent: parse failed, using plaintext fallback")
-            Triple(plaintext, null, null)
+            DecryptedContent(plaintext, null, null, null)
         }
     }
 
     private fun createMessage(envelope: DmEnvelope, plaintext: String): Message {
-        val (content, fileThumbnails, fileAspectRatios) = parseDecryptedContent(plaintext)
+        val dec = parseDecryptedContent(plaintext)
         val username = if (envelope.senderId == currentUserId) {
             "You"
         } else {
@@ -224,7 +234,7 @@ class DmPanel(
         return Message(
             id = envelope.id,
             user_id = envelope.senderId,
-            content = content,
+            content = dec.text,
             timestamp = envelope.timestamp,
             is_read = envelope.recipientId == currentUserId,
             is_edited = false,
@@ -236,8 +246,9 @@ class DmPanel(
             reactions = null,
             files = envelope.files,
             dmEnvelope = envelope,
-            fileThumbnails = fileThumbnails,
-            fileAspectRatios = fileAspectRatios
+            fileThumbnails = dec.thumbnails,
+            fileAspectRatios = dec.aspectRatios,
+            fileSizes = dec.fileSizes
         )
     }
 
