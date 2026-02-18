@@ -1,18 +1,25 @@
 package ru.fromchat.ui.chat
 
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.tween
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.gestures.rememberTransformableState
+import androidx.compose.foundation.gestures.transformable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
@@ -39,15 +46,22 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.RectangleShape
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import kotlinx.datetime.TimeZone
 import kotlinx.datetime.toLocalDateTime
 import ru.fromchat.api.Message
+import kotlin.math.max
+import kotlin.math.roundToInt
 import kotlin.time.ExperimentalTime
 import kotlin.time.Instant
 
@@ -87,7 +101,7 @@ fun ImageFullscreenPreview(
     val envelope = message.dmEnvelope
     val thumbnailBase64 = message.fileThumbnails?.getOrNull(fileIndex)
 
-    var fullBytes by remember(message.id, fileIndex, file.path) {
+    var cachedPath by remember(message.id, fileIndex, file.path) {
         mutableStateOf(DecryptedImageCache.getCached(message.id, fileIndex, file.path))
     }
     val thumbnailBytes = remember(thumbnailBase64) {
@@ -95,162 +109,267 @@ fun ImageFullscreenPreview(
     }
 
     LaunchedEffect(message.id, fileIndex, file.path, envelope) {
-        fullBytes = DecryptedImageCache.getOrDecrypt(message.id, fileIndex, file, envelope, currentUserId)
+        cachedPath = DecryptedImageCache.getOrDecrypt(message.id, fileIndex, file, envelope, currentUserId)
     }
+
+    val imageModel = cachedPath ?: thumbnailBytes
+
+    var menusVisible by remember { mutableStateOf(true) }
+    var dismissRequested by remember { mutableStateOf(false) }
 
     Box(
         modifier = modifier
             .fillMaxSize()
-            .windowInsetsPadding(WindowInsets.systemBars)
             .background(Color.Black)
-            .pointerInput(Unit) {
-                detectTapGestures(onTap = { onDismiss() })
-            }
     ) {
-        val fileAspectRatio = message.fileAspectRatios?.getOrNull(fileIndex)?.takeIf { it > 0f }
-        // Center image - scale to width when aspect ratio known
-        Box(
+        BoxWithConstraints(
             modifier = Modifier
                 .fillMaxSize()
                 .clip(RectangleShape)
                 .align(Alignment.Center),
             contentAlignment = Alignment.Center
         ) {
-            when (val bytes = fullBytes ?: thumbnailBytes) {
-                null -> androidx.compose.material3.CircularProgressIndicator(
-                    modifier = Modifier.size(48.dp),
-                    color = Color.White
-                )
-                else -> {
-                    val imageModifier = if (sharedImageKey != null && sharedTransitionScope != null && animatedVisibilityScope != null) {
-                        with(sharedTransitionScope) {
-                            Modifier
-                                .then(
-                                    if (fileAspectRatio != null) Modifier.fillMaxWidth().aspectRatio(fileAspectRatio)
-                                    else Modifier.fillMaxSize()
-                                )
-                                .sharedElement(
-                                    rememberSharedContentState(key = sharedImageKey),
-                                    animatedVisibilityScope = animatedVisibilityScope
-                                )
-                        }
-                    } else if (fileAspectRatio != null) Modifier.fillMaxWidth().aspectRatio(fileAspectRatio)
-                    else Modifier.fillMaxSize()
-                    AsyncImage(
-                        model = bytes,
-                        contentDescription = file.name,
-                        modifier = imageModifier,
-                        contentScale = ContentScale.FillWidth
+            val containerWidth = constraints.maxWidth.toFloat()
+            val containerHeight = constraints.maxHeight.toFloat()
+            val fileAspectRatio = message.fileAspectRatios?.getOrNull(fileIndex)?.takeIf { it > 0f }
+            val contentHeightAtScale1 = if (fileAspectRatio != null) containerWidth / fileAspectRatio else containerHeight
+
+            when (val model = imageModel) {
+                null -> {
+                    LaunchedEffect(dismissRequested) {
+                        if (dismissRequested) onDismiss()
+                    }
+                    androidx.compose.material3.CircularProgressIndicator(
+                        modifier = Modifier.size(48.dp),
+                        color = Color.White
                     )
+                }
+                else -> {
+                    var scale by remember { mutableStateOf(1f) }
+                    var offset by remember { mutableStateOf(Offset.Zero) }
+                    val scaleAnim = remember { Animatable(1f) }
+                    val offsetXAnim = remember { Animatable(0f) }
+                    val offsetYAnim = remember { Animatable(0f) }
+                    val state = rememberTransformableState { zoomChange, offsetChange, _ ->
+                        scale = (scale * zoomChange).coerceIn(1f, 12f)
+                        offset += offsetChange
+                    }
+
+                    LaunchedEffect(dismissRequested) {
+                        if (!dismissRequested) return@LaunchedEffect
+
+                        val hasTransform = scaleAnim.value != 1f ||
+                            offsetXAnim.value != 0f ||
+                            offsetYAnim.value != 0f
+
+                        if (hasTransform) {
+                            coroutineScope {
+                                launch { scaleAnim.animateTo(1f, tween(220)) }
+                                launch { offsetXAnim.animateTo(0f, tween(220)) }
+                                launch { offsetYAnim.animateTo(0f, tween(220)) }
+                            }
+                        }
+
+                        onDismiss()
+                    }
+                    LaunchedEffect(scale, offset, state.isTransformInProgress) {
+                        if (state.isTransformInProgress) {
+                            scaleAnim.snapTo(scale)
+                            offsetXAnim.snapTo(offset.x)
+                            offsetYAnim.snapTo(offset.y)
+                        }
+                    }
+                    LaunchedEffect(state.isTransformInProgress) {
+                        if (!state.isTransformInProgress) {
+                            val clampedScale = scale.coerceIn(1f, 10f)
+                            val scaledW = containerWidth * clampedScale
+                            val scaledH = contentHeightAtScale1 * clampedScale
+                            val maxOffsetX = max(0f, (scaledW - containerWidth) / 2f)
+                            val minOffsetX = -maxOffsetX
+                            val maxOffsetY = max(0f, (scaledH - containerHeight) / 2f)
+                            val minOffsetY = -maxOffsetY
+                            val clampedOffset = Offset(
+                                offset.x.coerceIn(minOffsetX, maxOffsetX),
+                                offset.y.coerceIn(minOffsetY, maxOffsetY)
+                            )
+                            scaleAnim.snapTo(scale)
+                            offsetXAnim.snapTo(offset.x)
+                            offsetYAnim.snapTo(offset.y)
+                            coroutineScope {
+                                launch { scaleAnim.animateTo(clampedScale, tween(300)) }
+                                launch { offsetXAnim.animateTo(clampedOffset.x, tween(300)) }
+                                launch { offsetYAnim.animateTo(clampedOffset.y, tween(300)) }
+                            }
+                            scale = scaleAnim.value
+                            offset = Offset(offsetXAnim.value, offsetYAnim.value)
+                        }
+                    }
+
+                    val sharedElementModifier = if (sharedImageKey != null && sharedTransitionScope != null && animatedVisibilityScope != null) {
+                        with(sharedTransitionScope) {
+                            Modifier.sharedElement(
+                                rememberSharedContentState(key = sharedImageKey),
+                                animatedVisibilityScope = animatedVisibilityScope
+                            )
+                        }
+                    } else Modifier
+                    val sizeModifier = if (fileAspectRatio != null) Modifier.fillMaxWidth().aspectRatio(fileAspectRatio)
+                    else Modifier.fillMaxSize()
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .transformable(state = state, lockRotationOnZoomPan = true)
+                            .pointerInput(Unit) {
+                                detectTapGestures(onTap = { menusVisible = !menusVisible })
+                            },
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
+                            modifier = Modifier
+                                .then(sizeModifier)
+                                .then(sharedElementModifier)
+                                .offset { IntOffset(offsetXAnim.value.roundToInt(), offsetYAnim.value.roundToInt()) }
+                        ) {
+                            AsyncImage(
+                                model = model,
+                                contentDescription = file.name,
+                                modifier = Modifier
+                                    .fillMaxSize()
+                                    .graphicsLayer {
+                                        scaleX = scaleAnim.value
+                                        scaleY = scaleAnim.value
+                                    },
+                                contentScale = ContentScale.FillWidth
+                            )
+                        }
+                    }
                 }
             }
         }
 
         // Top bar: back, display name + date/time, 3-dot menu
-        Row(
+        AnimatedVisibility(
+            visible = menusVisible,
+            enter = androidx.compose.animation.fadeIn(),
+            exit = androidx.compose.animation.fadeOut(),
             modifier = Modifier
                 .align(Alignment.TopStart)
                 .fillMaxWidth()
-                .background(Color.Black.copy(alpha = MENU_BG_ALPHA))
-                .padding(horizontal = 8.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.SpaceBetween
         ) {
-            IconButton(onClick = onDismiss) {
-                Icon(
-                    imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                    contentDescription = "Back",
-                    tint = Color.White
-                )
-            }
-            Column(
-                modifier = Modifier.weight(1f),
-                horizontalAlignment = Alignment.CenterHorizontally
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(Color.Black.copy(alpha = MENU_BG_ALPHA))
+                    .windowInsetsPadding(WindowInsets.systemBars)
+                    .padding(horizontal = 8.dp, vertical = 12.dp),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.SpaceBetween
             ) {
-                Text(
-                    text = message.username,
-                    style = MaterialTheme.typography.titleMedium,
-                    color = Color.White
-                )
-                Text(
-                    text = formatDateTime(message.timestamp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = Color.White.copy(alpha = 0.8f)
-                )
-            }
-            var menuExpanded by remember { mutableStateOf(false) }
-            Box {
-                IconButton(onClick = { menuExpanded = true }) {
+                IconButton(onClick = { dismissRequested = true }) {
                     Icon(
-                        imageVector = Icons.Default.MoreVert,
-                        contentDescription = "Menu",
+                        imageVector = Icons.AutoMirrored.Filled.ArrowBack,
+                        contentDescription = "Back",
                         tint = Color.White
                     )
                 }
-                DropdownMenu(
-                    expanded = menuExpanded,
-                    onDismissRequest = { menuExpanded = false },
-                    modifier = Modifier.background(Color.Black.copy(alpha = MENU_BG_ALPHA))
+                Column(
+                    modifier = Modifier.weight(1f),
+                    horizontalAlignment = Alignment.CenterHorizontally
                 ) {
-                    DropdownMenuItem(
-                        text = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.AutoMirrored.Filled.Reply, null, tint = Color.White)
-                                Spacer(Modifier.width(8.dp))
-                                Text("Reply", color = Color.White)
-                            }
-                        },
+                    Text(
+                        text = message.username,
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White
+                    )
+                    Text(
+                        text = formatDateTime(message.timestamp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = Color.White.copy(alpha = 0.8f)
+                    )
+                }
+                var menuExpanded by remember { mutableStateOf(false) }
+                Box {
+                    IconButton(onClick = { menuExpanded = true }) {
+                        Icon(
+                            imageVector = Icons.Default.MoreVert,
+                            contentDescription = "Menu",
+                            tint = Color.White
+                        )
+                    }
+                    DropdownMenu(
+                        expanded = menuExpanded,
+                        onDismissRequest = { menuExpanded = false },
+                        modifier = Modifier.background(Color.Black.copy(alpha = MENU_BG_ALPHA))
+                    ) {
+                        DropdownMenuItem(
+                            text = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.AutoMirrored.Filled.Reply, null, tint = Color.White)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Reply", color = Color.White)
+                                }
+                            },
                         onClick = {
                             menuExpanded = false
                             onReply(message)
-                            onDismiss()
+                            dismissRequested = true
                         }
-                    )
-                    DropdownMenuItem(
-                        text = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.SaveAlt, null, tint = Color.White)
-                                Spacer(Modifier.width(8.dp))
-                                Text("Save", color = Color.White)
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.SaveAlt, null, tint = Color.White)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Save", color = Color.White)
+                                }
+                            },
+                            onClick = {
+                                menuExpanded = false
+                                onSave(message, fileIndex)
                             }
-                        },
-                        onClick = {
-                            menuExpanded = false
-                            onSave(message, fileIndex)
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Icon(Icons.Default.Delete, null, tint = Color.White)
-                                Spacer(Modifier.width(8.dp))
-                                Text("Delete", color = Color.White)
-                            }
-                        },
+                        )
+                        DropdownMenuItem(
+                            text = {
+                                Row(verticalAlignment = Alignment.CenterVertically) {
+                                    Icon(Icons.Default.Delete, null, tint = Color.White)
+                                    Spacer(Modifier.width(8.dp))
+                                    Text("Delete", color = Color.White)
+                                }
+                            },
                         onClick = {
                             menuExpanded = false
                             onDelete(message)
-                            onDismiss()
+                            dismissRequested = true
                         }
-                    )
+                        )
+                    }
                 }
             }
         }
 
         // Bottom: message text
-        if (message.content.isNotBlank()) {
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomStart)
-                    .fillMaxWidth()
-                    .background(Color.Black.copy(alpha = MENU_BG_ALPHA))
-                    .padding(16.dp)
-            ) {
-                Text(
-                    text = message.content,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = Color.White
-                )
+        AnimatedVisibility(
+            visible = menusVisible && message.content.isNotBlank(),
+            enter = androidx.compose.animation.fadeIn(),
+            exit = androidx.compose.animation.fadeOut(),
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .fillMaxWidth()
+        ) {
+            if (message.content.isNotBlank()) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.Black.copy(alpha = MENU_BG_ALPHA))
+                        .windowInsetsPadding(WindowInsets.systemBars)
+                        .padding(16.dp)
+                ) {
+                    Text(
+                        text = message.content,
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White
+                    )
+                }
             }
         }
     }

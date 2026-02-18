@@ -107,7 +107,9 @@ data class Message(
     /** Aspect ratios (width/height) for image files (by index); from decrypted message JSON. */
     @kotlinx.serialization.Transient val fileAspectRatios: List<Float>? = null,
     /** File sizes in bytes (by index); from decrypted message JSON. */
-    @kotlinx.serialization.Transient val fileSizes: List<Long>? = null
+    @kotlinx.serialization.Transient val fileSizes: List<Long>? = null,
+    /** Image dimensions (width, height) for image files (by index); from decrypted message JSON. */
+    @kotlinx.serialization.Transient val fileDimensions: List<Pair<Int, Int>>? = null
 )
 
 @Serializable

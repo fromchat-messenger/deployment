@@ -3,6 +3,7 @@ package ru.fromchat.ui.chat
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.ExitTransition
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -304,7 +305,7 @@ fun ChatScreen(
         targetState = expandedImage,
         modifier = Modifier.fillMaxSize(),
         transitionSpec = {
-            fadeIn(animationSpec = tween(300)) togetherWith fadeOut(animationSpec = tween(300))
+            fadeIn(animationSpec = tween(300)) togetherWith ExitTransition.None
         },
         label = "image_fullscreen"
     ) { expanded ->

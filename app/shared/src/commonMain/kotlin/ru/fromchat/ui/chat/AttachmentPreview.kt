@@ -269,7 +269,7 @@ private fun DecryptedImageContent(
     animatedVisibilityScope: AnimatedVisibilityScope? = null,
     onFullyLoaded: (Boolean) -> Unit = {}
 ) {
-    var fullBytes by remember(messageId, fileIndex, file.path) {
+    var cachedPath by remember(messageId, fileIndex, file.path) {
         mutableStateOf(DecryptedImageCache.getCached(messageId, fileIndex, file.path))
     }
     val thumbnailBytes = remember(thumbnailBase64) {
@@ -277,14 +277,39 @@ private fun DecryptedImageContent(
     }
 
     LaunchedEffect(messageId, fileIndex, file.path, envelope) {
-        fullBytes = DecryptedImageCache.getOrDecrypt(messageId, fileIndex, file, envelope, currentUserId)
+        cachedPath = DecryptedImageCache.getOrDecrypt(messageId, fileIndex, file, envelope, currentUserId)
     }
-    LaunchedEffect(fullBytes) {
-        onFullyLoaded(fullBytes != null)
+    LaunchedEffect(cachedPath) {
+        onFullyLoaded(cachedPath != null)
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
         when {
+            cachedPath != null -> {
+                val fullPainter = rememberAsyncImagePainter(
+                    model = cachedPath!!,
+                    contentScale = ContentScale.FillWidth
+                )
+                val fullState by fullPainter.state.collectAsState()
+                when (fullState) {
+                    is coil3.compose.AsyncImagePainter.State.Success -> {
+                        Image(
+                            painter = fullPainter,
+                            contentDescription = file.name,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .clip(RoundedCornerShape(IMAGE_RADIUS)),
+                            contentScale = ContentScale.FillWidth
+                        )
+                    }
+                    is coil3.compose.AsyncImagePainter.State.Loading -> {
+                        Box(modifier = Modifier.fillMaxSize())
+                    }
+                    else -> {
+                        Box(modifier = Modifier.fillMaxSize())
+                    }
+                }
+            }
             thumbnailBytes == null -> {
                 Box(
                     modifier = Modifier.fillMaxSize(),
@@ -299,9 +324,8 @@ private fun DecryptedImageContent(
                     contentScale = ContentScale.Crop
                 )
                 val thumbState by thumbPainter.state.collectAsState()
-                val showThumbnailLoading = fullBytes == null && thumbState is coil3.compose.AsyncImagePainter.State.Loading
-                when {
-                    showThumbnailLoading -> {
+                when (thumbState) {
+                    is coil3.compose.AsyncImagePainter.State.Loading -> {
                         Box(
                             modifier = Modifier.fillMaxSize(),
                             contentAlignment = Alignment.Center
@@ -309,7 +333,7 @@ private fun DecryptedImageContent(
                             InfiniteCircularProgress()
                         }
                     }
-                    thumbState is coil3.compose.AsyncImagePainter.State.Success -> {
+                    is coil3.compose.AsyncImagePainter.State.Success -> {
                         Image(
                             painter = thumbPainter,
                             contentDescription = file.name,
@@ -319,9 +343,9 @@ private fun DecryptedImageContent(
                                 .blur(8.dp),
                             contentScale = ContentScale.Crop
                         )
-                        if (fullBytes != null) {
+                        if (cachedPath != null) {
                             val fullPainter = rememberAsyncImagePainter(
-                                model = fullBytes,
+                                model = cachedPath!!,
                                 contentScale = ContentScale.FillWidth
                             )
                             val fullState by fullPainter.state.collectAsState()
@@ -346,15 +370,11 @@ private fun DecryptedImageContent(
                         }
                     }
                     else -> {
-                        if (fullBytes != null) {
-                            Box(modifier = Modifier.fillMaxSize())
-                        } else {
-                            Box(
-                                modifier = Modifier.fillMaxSize(),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                InfiniteCircularProgress()
-                            }
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            InfiniteCircularProgress()
                         }
                     }
                 }

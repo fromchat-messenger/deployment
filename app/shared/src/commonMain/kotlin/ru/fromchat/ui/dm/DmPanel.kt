@@ -185,7 +185,8 @@ class DmPanel(
                         is_edited = true,
                         fileThumbnails = dec.thumbnails ?: it.fileThumbnails,
                         fileAspectRatios = dec.aspectRatios ?: it.fileAspectRatios,
-                        fileSizes = dec.fileSizes ?: it.fileSizes
+                        fileSizes = dec.fileSizes ?: it.fileSizes,
+                        fileDimensions = dec.fileDimensions ?: it.fileDimensions
                     )
                 }
             } else {
@@ -198,31 +199,34 @@ class DmPanel(
         val text: String,
         val thumbnails: List<String>?,
         val aspectRatios: List<Float>?,
-        val fileSizes: List<Long>?
+        val fileSizes: List<Long>?,
+        val fileDimensions: List<Pair<Int, Int>>?
     )
 
     private fun parseDecryptedContent(plaintext: String): DecryptedContent {
         return runCatching {
             val obj = json.parseToJsonElement(plaintext).jsonObject
-            val text = obj["text"]?.jsonPrimitive?.content ?: return@runCatching DecryptedContent(plaintext, null, null, null)
-            val thumbArr = obj["fileThumbnails"]?.jsonArray ?: return@runCatching DecryptedContent(text, null, null, null)
+            val text = obj["text"]?.jsonPrimitive?.content ?: return@runCatching DecryptedContent(plaintext, null, null, null, null)
+            val thumbArr = obj["fileThumbnails"]?.jsonArray ?: return@runCatching DecryptedContent(text, null, null, null, null)
             val thumbnails = thumbArr.map { it.jsonPrimitive.content }
             val arArr = obj["fileAspectRatios"]?.jsonArray
-            val aspectRatios = arArr?.mapNotNull { elem ->
-                val arr = elem as? JsonArray ?: return@mapNotNull null
-                if (arr.size == 2) {
-                    val w = (arr.getOrNull(0) as? JsonPrimitive)?.content?.toIntOrNull()
-                    val h = (arr.getOrNull(1) as? JsonPrimitive)?.content?.toIntOrNull()
-                    if (w != null && h != null && h > 0) w.toFloat() / h else null
+            val parsed = arArr?.mapNotNull { elem ->
+                val a = elem as? JsonArray ?: return@mapNotNull null
+                if (a.size == 2) {
+                    val w = (a.getOrNull(0) as? JsonPrimitive)?.content?.toIntOrNull()
+                    val h = (a.getOrNull(1) as? JsonPrimitive)?.content?.toIntOrNull()
+                    if (w != null && h != null && h > 0) Triple(w, h, w.toFloat() / h) else null
                 } else null
             }?.takeIf { it.size == thumbnails.size }
+            val aspectRatios = parsed?.map { it.third }
+            val fileDimensions = parsed?.map { it.first to it.second }
             val sizesArr = obj["fileSizes"]?.jsonArray
             val fileSizes = sizesArr?.mapNotNull { (it as? JsonPrimitive)?.content?.toLongOrNull() }?.takeIf { it.size == thumbnails.size }
             Logger.d("DmPanel", "parseDecryptedContent: thumbnails=${thumbnails.size}, aspectRatios=${aspectRatios?.size}, fileSizes=${fileSizes?.size}")
-            DecryptedContent(text, thumbnails.ifEmpty { null }, aspectRatios, fileSizes)
+            DecryptedContent(text, thumbnails.ifEmpty { null }, aspectRatios, fileSizes, fileDimensions)
         }.getOrElse {
             Logger.d("DmPanel", "parseDecryptedContent: parse failed, using plaintext fallback")
-            DecryptedContent(plaintext, null, null, null)
+            DecryptedContent(plaintext, null, null, null, null)
         }
     }
 
@@ -250,7 +254,8 @@ class DmPanel(
             dmEnvelope = envelope,
             fileThumbnails = dec.thumbnails,
             fileAspectRatios = dec.aspectRatios,
-            fileSizes = dec.fileSizes
+            fileSizes = dec.fileSizes,
+            fileDimensions = dec.fileDimensions
         )
     }
 

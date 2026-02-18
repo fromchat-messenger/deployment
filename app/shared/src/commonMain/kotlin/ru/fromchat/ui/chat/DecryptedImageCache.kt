@@ -1,24 +1,45 @@
 package ru.fromchat.ui.chat
 
+import com.pr0gramm3r101.utils.files.PlatformFileSystem
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import ru.fromchat.api.DmEnvelope
 import ru.fromchat.api.DmFile
 import ru.fromchat.crypto.decryptFile
 
 /**
- * Cache for decrypted image bytes. Key includes messageId, fileIndex, and file.path
+ * Disk cache for decrypted image bytes. Key includes messageId, fileIndex, and file.path
  * so that server updates (e.g. image replacement) produce cache misses via path change.
  */
 object DecryptedImageCache {
-    private val cache = mutableMapOf<String, ByteArray>()
-    private val lock = Any()
+    private var cacheDir: String? = null
+    private val mutex = Mutex()
 
-    private fun key(messageId: Int, fileIndex: Int, filePath: String): String =
-        "img_${messageId}_${fileIndex}_$filePath"
+    fun init(cacheDirPath: String) {
+        cacheDir = cacheDirPath
+    }
 
-    fun getCached(messageId: Int, fileIndex: Int, filePath: String): ByteArray? =
-        synchronized(lock) { cache[key(messageId, fileIndex, filePath)] }
+    private fun ensureCacheDir(): String? {
+        if (cacheDir == null) {
+            val base = PlatformFileSystem.getAppCacheDirectory()
+            if (base.isEmpty()) return null
+            cacheDir = PlatformFileSystem.ensureDirectory("$base/decrypted_images")
+        }
+        return cacheDir
+    }
+
+    private fun key(messageId: Int, fileIndex: Int, filePath: String): String {
+        val safePath = filePath.hashCode().toString(36).replace("-", "m")
+        return "img_${messageId}_${fileIndex}_$safePath"
+    }
+
+    fun getCached(messageId: Int, fileIndex: Int, filePath: String): String? {
+        val dir = ensureCacheDir() ?: return null
+        val path = "$dir/${key(messageId, fileIndex, filePath)}"
+        return if (PlatformFileSystem.exists(path)) "file://$path" else null
+    }
 
     suspend fun getOrDecrypt(
         messageId: Int,
@@ -26,32 +47,40 @@ object DecryptedImageCache {
         file: DmFile,
         envelope: DmEnvelope?,
         currentUserId: Int?
-    ): ByteArray? {
+    ): String? {
         if (envelope == null) return null
+        val dir = ensureCacheDir() ?: return null
         val k = key(messageId, fileIndex, file.path)
-        synchronized(lock) {
-            cache[k]?.let { return it }
+        val path = "$dir/$k"
+
+        mutex.withLock {
+            if (PlatformFileSystem.exists(path)) return "file://$path"
         }
+
         val bytes = runCatching {
             withContext(Dispatchers.Default) {
                 decryptFile(file, envelope, currentUserId)
             }
         }.getOrNull() ?: return null
-        synchronized(lock) {
-            cache[k] = bytes
+
+        mutex.withLock {
+            PlatformFileSystem.writeBytes(path, bytes)
         }
-        return bytes
+        return "file://$path"
     }
 
     suspend fun invalidateForMessage(messageId: Int) {
-        synchronized(lock) {
-            cache.keys.removeAll { it.startsWith("img_${messageId}_") }
+        val dir = ensureCacheDir() ?: return
+        withContext(Dispatchers.Default) {
+            PlatformFileSystem.deleteFilesWithPrefix(dir, "img_${messageId}_")
         }
     }
 
     suspend fun invalidateForFile(messageId: Int, fileIndex: Int, filePath: String) {
-        synchronized(lock) {
-            cache.remove(key(messageId, fileIndex, filePath))
+        val dir = ensureCacheDir() ?: return
+        val path = "$dir/${key(messageId, fileIndex, filePath)}"
+        withContext(Dispatchers.Default) {
+            PlatformFileSystem.delete(path)
         }
     }
 }
