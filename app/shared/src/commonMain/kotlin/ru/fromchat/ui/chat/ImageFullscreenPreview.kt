@@ -180,7 +180,7 @@ fun ImageFullscreenPreview(
                             val thumbWidth = thumbnailBounds.width
                             val s = thumbWidth / containerWidth
                             val o = thumbCenter - fullCenter
-                            InitialTransform(s, o.x, o.y, 8f, 0f)
+                            InitialTransform(s, o.x, o.y, 12f, 0f)
                         } else {
                             InitialTransform(1f, 0f, 0f, 0f, 1f)
                         }
@@ -216,7 +216,7 @@ fun ImageFullscreenPreview(
                             scaleAnim.snapTo(startScale)
                             offsetXAnim.snapTo(startOffset.x)
                             offsetYAnim.snapTo(startOffset.y)
-                            cornerRadiusAnim.snapTo(8f)
+                            cornerRadiusAnim.snapTo(12f)
                             backgroundAlpha.snapTo(0f)
                             menusVisible = false
 
@@ -262,7 +262,7 @@ fun ImageFullscreenPreview(
                                 launch { scaleAnim.animateTo(targetScale, tween(250)) }
                                 launch { offsetXAnim.animateTo(targetOffset.x, tween(250)) }
                                 launch { offsetYAnim.animateTo(targetOffset.y, tween(250)) }
-                                launch { cornerRadiusAnim.animateTo(8f, tween(250)) }
+                                launch { cornerRadiusAnim.animateTo(12f, tween(250)) }
                                 launch { backgroundAlpha.animateTo(0f, tween(250)) }
                             }
                         } else {
@@ -351,8 +351,9 @@ fun ImageFullscreenPreview(
                                     .graphicsLayer {
                                         scaleX = scaleAnim.value
                                         scaleY = scaleAnim.value
-                                        shape = androidx.compose.foundation.shape.RoundedCornerShape(cornerRadiusAnim.value.dp)
-                                        clip = cornerRadiusAnim.value > 0f
+                                        val scale = maxOf(scaleAnim.value, 0.01f)
+                                        shape = androidx.compose.foundation.shape.RoundedCornerShape((cornerRadiusAnim.value / scale).dp)
+                                        clip = true
                                     },
                                 contentScale = ContentScale.FillWidth
                             )

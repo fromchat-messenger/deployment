@@ -119,6 +119,10 @@ fun MessageItem(
                 ) {
                     // Message bubble
                     val isDark = isSystemInDarkTheme()
+                    val firstContentIsImage = (!showUsername || isAuthor) &&
+                        message.reply_to == null &&
+                        (message.pendingFileUri?.let { isImageFilename(it.substringAfterLast('/').substringBefore('?')) } == true ||
+                            message.files?.firstOrNull()?.let { isImageFilename(it.name) } == true)
                     Box(
                         modifier = Modifier
                             // Max width: 70% of row, min width: content-driven
@@ -151,7 +155,7 @@ fun MessageItem(
                                     background(MaterialTheme.colorScheme.surfaceContainerHighest)
                                 }
                             )
-                            .padding(top = 6.dp)
+                            .padding(top = if (firstContentIsImage) 0.dp else 6.dp)
                     ) {
                         Column {
                             // Username inside bubble (for received messages)

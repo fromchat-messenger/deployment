@@ -8,6 +8,7 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -59,7 +60,7 @@ import ru.fromchat.api.DmEnvelope
 import ru.fromchat.api.DmFile
 
 private val IMAGE_SIZE = 160.dp
-private val IMAGE_RADIUS = 8.dp
+private val IMAGE_RADIUS = 12.dp
 
 internal fun isImageFilename(name: String): Boolean =
     name.endsWith(".png", true) || name.endsWith(".jpg", true) ||
@@ -125,7 +126,7 @@ fun AttachmentPreview(
             Box(
                 modifier = modifier
                     .then(
-                        if (onImageClick != null && isFullyLoaded && !isExpanded) Modifier.clickable(onClick = onImageClick)
+                        if (onImageClick != null && isFullyLoaded && !isExpanded) Modifier.clickable(indication = null, interactionSource = remember { MutableInteractionSource() }, onClick = onImageClick)
                         else Modifier
                     )
                     .conditional(
