@@ -1,24 +1,27 @@
 package ru.fromchat.ui.chat
 
+import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animate
-import androidx.compose.animation.core.tween
-import androidx.compose.foundation.clickable
+import androidx.compose.animation.core.spring
+import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.Reply
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -29,18 +32,25 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.shadow
+import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.ImageVector
-import androidx.compose.ui.layout.onGloballyPositioned
-import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.layout.SubcomposeLayout
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.IntOffset
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.materials.CupertinoMaterials
+import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import ru.fromchat.api.Message
+import ru.fromchat.ui.scaleOnPress
 
 data class ContextMenuState(
     val isOpen: Boolean = false,
@@ -48,6 +58,7 @@ data class ContextMenuState(
     val position: IntOffset = IntOffset(0, 0)
 )
 
+@OptIn(ExperimentalHazeMaterialsApi::class)
 @Suppress("AssignedValueIsNeverRead")
 @Composable
 fun MessageContextMenu(
@@ -57,131 +68,243 @@ fun MessageContextMenu(
     onReply: (Message) -> Unit,
     onEdit: (Message) -> Unit,
     onDelete: (Message) -> Unit,
+    hazeState: HazeState,
+    screenWidthPx: Int,
+    screenHeightPx: Int,
     modifier: Modifier = Modifier,
 ) {
-    var shouldShowPopup by remember(state.message) { 
+    var shouldShowPopup by remember(state.message) {
         mutableStateOf(state.isOpen && state.message != null)
     }
     val animationProgress = remember { mutableFloatStateOf(0f) }
-    
+
     LaunchedEffect(state.isOpen) {
-        if (state.isOpen) {
-            // Enter animation
-            animate(
-                initialValue = 0f,
-                targetValue = 1f,
-                animationSpec = tween(200)
-            ) { value, _ ->
-                animationProgress.floatValue = value
-            }
-        } else {
-            // Exit animation
+        if (!state.isOpen) {
             animate(
                 initialValue = 1f,
                 targetValue = 0f,
-                animationSpec = tween(150)
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioLowBouncy,
+                    stiffness = Spring.StiffnessMediumLow
+                )
             ) { value, _ ->
                 animationProgress.floatValue = value
             }
-            kotlinx.coroutines.delay(150)
             shouldShowPopup = false
         }
     }
-    
-    // Show popup when opening
+
     LaunchedEffect(state.isOpen, state.message) {
         if (state.isOpen && state.message != null) {
             shouldShowPopup = true
             animationProgress.floatValue = 0f
         }
     }
-    
+
     if (shouldShowPopup && state.message != null) {
-        var popupSize by remember { mutableStateOf(Offset(0f, 0f)) }
-        var popupPosition by remember { mutableStateOf(Offset(0f, 0f)) }
+        var measuredSize by remember(state.message) { mutableStateOf(IntSize.Zero) }
 
-        // Calculate transform origin based on click position relative to popup
-        val transformOriginX = if (popupSize.x > 0f) {
-            val clickXInPopup = state.position.x - popupPosition.x.toInt()
-            (clickXInPopup / popupSize.x).coerceIn(0f, 1f)
-        } else 0f
-        val transformOriginY = if (popupSize.y > 0f) {
-            val clickYInPopup = state.position.y - popupPosition.y.toInt()
-            (clickYInPopup / popupSize.y).coerceIn(0f, 1f)
-        } else 0f
-
-        val scale = animationProgress.floatValue * 0.2f + 0.8f
-        val alpha = animationProgress.floatValue
-        
-        Popup(
-            onDismissRequest = onDismiss,
-            alignment = Alignment.TopStart,
-            offset = state.position,
-            properties = PopupProperties(
-                dismissOnBackPress = true,
-                dismissOnClickOutside = true
+        // Off-screen measurement pass using a lightweight, non-animated version
+        SubcomposeLayout(Modifier.size(0.dp)) { _ ->
+            val looseConstraints = Constraints(
+                minWidth = 0,
+                minHeight = 0,
+                maxWidth = screenWidthPx,
+                maxHeight = screenHeightPx
             )
-        ) {
-            Surface(
-                modifier = modifier
-                    .width(160.dp)
-                    .onGloballyPositioned { coordinates ->
-                        popupSize = Offset(
-                            coordinates.size.width.toFloat(),
-                            coordinates.size.height.toFloat()
-                        )
-                        popupPosition = coordinates.positionInRoot()
-                    }
-                    .graphicsLayer(
-                        scaleX = scale,
-                        scaleY = scale,
-                        alpha = alpha,
-                        transformOrigin = TransformOrigin(transformOriginX, transformOriginY)
-                    )
-                    .shadow(8.dp, RoundedCornerShape(8.dp)),
-                shape = RoundedCornerShape(8.dp),
-                color = MaterialTheme.colorScheme.surfaceContainerHighest
-            ) {
-                Column {
-                    // Reply button (always shown)
-                    ContextMenuItem(
-                        icon = Icons.AutoMirrored.Filled.Reply,
-                        text = "Reply",
-                        onClick = {
-                            onReply(state.message)
-                            onDismiss()
-                        }
-                    )
+            val placeables = subcompose("measure") {
+                ContextMenuContent(
+                    message = state.message,
+                    isAuthor = isAuthor,
+                    onReply = {},
+                    onEdit = {},
+                    onDelete = {},
+                    modifier = modifier.graphicsLayer(alpha = 0f),
+                    animated = false,
+                    withShadow = false,
+                )
+            }.map { it.measure(looseConstraints) }
+            val p = placeables.firstOrNull()
+            if (p != null && measuredSize == IntSize.Zero) {
+                measuredSize = IntSize(p.width, p.height)
+            }
+            layout(0, 0) {
+                placeables.forEach { it.placeRelative(-10000, -10000) }
+            }
+        }
 
-                    // Edit button (only for own messages)
-                    if (isAuthor) {
-                        ContextMenuItem(
-                            icon = Icons.Default.Edit,
-                            text = "Edit",
-                            onClick = {
-                                onEdit(state.message)
-                                onDismiss()
-                            }
-                        )
-                    }
+        val density = LocalDensity.current
+        val paddingPx = with(density) { 16.dp.toPx().toInt() }
+        val rightEdge = screenWidthPx - paddingPx
+        val bottomEdge = screenHeightPx - paddingPx
 
-                    // Delete button (only for own messages)
-                    if (isAuthor) {
-                        ContextMenuItem(
-                            icon = Icons.Default.Delete,
-                            text = "Delete",
-                            onClick = {
-                                onDelete(state.message)
-                                onDismiss()
-                            },
-                            isError = true
-                        )
-                    }
+        val adjustedOffset = remember(measuredSize, state.position, rightEdge, bottomEdge, paddingPx) {
+            if (measuredSize == IntSize.Zero) {
+                state.position
+            } else {
+                var x = state.position.x
+                var y = state.position.y
+                if (x + measuredSize.width > rightEdge) x = rightEdge - measuredSize.width
+                if (y + measuredSize.height > bottomEdge) y = bottomEdge - measuredSize.height
+                if (x < paddingPx) x = paddingPx
+                if (y < paddingPx) y = paddingPx
+                IntOffset(x, y)
+            }
+        }
+
+        val sizeF = Offset(measuredSize.width.toFloat(), measuredSize.height.toFloat())
+        val transformOriginX = if (sizeF.x > 0f) {
+            ((state.position.x - adjustedOffset.x) / sizeF.x).coerceIn(0f, 1f)
+        } else 0f
+        val transformOriginY = if (sizeF.y > 0f) {
+            ((state.position.y - adjustedOffset.y) / sizeF.y).coerceIn(0f, 1f)
+        } else 0f
+
+        LaunchedEffect(measuredSize) {
+            if (measuredSize != IntSize.Zero) {
+                animate(
+                    initialValue = 0f,
+                    targetValue = 1f,
+                    animationSpec = spring(
+                        dampingRatio = Spring.DampingRatioLowBouncy,
+                        stiffness = Spring.StiffnessMediumLow
+                    )
+                ) { value, _ ->
+                    animationProgress.floatValue = value
                 }
+            }
+        }
+
+        val scale = 0.5f + 0.5f * animationProgress.floatValue
+        val alpha = animationProgress.floatValue
+
+        if (measuredSize != IntSize.Zero) {
+            Popup(
+                onDismissRequest = onDismiss,
+                alignment = Alignment.TopStart,
+                offset = adjustedOffset,
+                properties = PopupProperties(
+                    dismissOnBackPress = true,
+                    dismissOnClickOutside = true,
+                    clippingEnabled = false
+                )
+            ) {
+                ContextMenuContent(
+                    message = state.message,
+                    isAuthor = isAuthor,
+                    onReply = {
+                        onReply(it)
+                        onDismiss()
+                    },
+                    onEdit = {
+                        onEdit(it)
+                        onDismiss()
+                    },
+                    onDelete = {
+                        onDelete(it)
+                        onDismiss()
+                    },
+                    hazeState = hazeState,
+                    modifier = modifier,
+                    animated = true,
+                    scale = scale,
+                    alpha = alpha,
+                    transformOriginX = transformOriginX,
+                    transformOriginY = transformOriginY
+                )
             }
         }
     }
 }
+
+@OptIn(ExperimentalHazeMaterialsApi::class)
+@Composable
+private fun ContextMenuContent(
+    message: Message,
+    isAuthor: Boolean,
+    onReply: (Message) -> Unit,
+    onEdit: (Message) -> Unit,
+    onDelete: (Message) -> Unit,
+    modifier: Modifier,
+    animated: Boolean,
+    hazeState: HazeState? = null,
+    withShadow: Boolean = true,
+    scale: Float = 1f,
+    alpha: Float = 1f,
+    transformOriginX: Float = 0f,
+    transformOriginY: Float = 0f,
+) {
+    val menuShape = RoundedCornerShape(16.dp)
+    val menuScrollState = rememberScrollState()
+    val baseModifier = modifier.width(IntrinsicSize.Max)
+    val clipped = baseModifier.clip(menuShape)
+
+    val density = LocalDensity.current
+    val shadowElevationPx = if (withShadow) {
+        with(density) { 12.dp.toPx() }
+    } else {
+        0f
+    }
+
+    val finalModifier =
+        if (hazeState != null) {
+            clipped
+                .graphicsLayer(
+                    scaleX = if (animated) scale else 1f,
+                    scaleY = if (animated) scale else 1f,
+                    alpha = if (animated) alpha else 1f,
+                    transformOrigin = TransformOrigin(transformOriginX, transformOriginY),
+                    shadowElevation = shadowElevationPx,
+                    shape = menuShape,
+                    clip = true
+                )
+                .hazeEffect(state = hazeState, style = CupertinoMaterials.regular()) {
+                    blurRadius = 8.dp
+                }
+        } else {
+            clipped.graphicsLayer(
+                shadowElevation = shadowElevationPx,
+                shape = menuShape,
+                clip = true
+            )
+        }
+    val edgePadding = 8.dp
+    val itemSpacing = 2.dp
+
+    Box(modifier = finalModifier) {
+        Column(
+            modifier = Modifier
+                .padding(horizontal = edgePadding, vertical = edgePadding)
+                .verticalScroll(menuScrollState),
+            verticalArrangement = Arrangement.spacedBy(itemSpacing)
+        ) {
+            ContextMenuItem(
+                icon = Icons.AutoMirrored.Filled.Reply,
+                text = "Reply",
+                onClick = {
+                    onReply(message)
+                }
+            )
+            if (isAuthor) {
+                ContextMenuItem(
+                    icon = Icons.Default.Edit,
+                    text = "Edit",
+                    onClick = { onEdit(message) }
+                )
+            }
+            if (isAuthor) {
+                ContextMenuItem(
+                    icon = Icons.Default.Delete,
+                    text = "Delete",
+                    onClick = { onDelete(message) },
+                    isError = true
+                )
+            }
+        }
+    }
+}
+
+private val itemShape = RoundedCornerShape(12.dp)
 
 @Composable
 private fun ContextMenuItem(
@@ -201,16 +324,21 @@ private fun ContextMenuItem(
     } else {
         MaterialTheme.colorScheme.onSurface
     }
-
     Box(
         modifier = modifier
             .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 12.dp),
+            .padding(4.dp)
+            .clip(itemShape)
+            .scaleOnPress(
+                scale = 0.96f,
+                onClick = onClick,
+                indication = LocalIndication.current
+            )
+            .padding(horizontal = 12.dp, vertical = 8.dp),
         contentAlignment = Alignment.CenterStart
     ) {
         Row(
-            horizontalArrangement = Arrangement.spacedBy(12.dp),
+            horizontalArrangement = Arrangement.spacedBy(16.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             Icon(

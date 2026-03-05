@@ -2,6 +2,8 @@ package ru.fromchat.ui.chat
 
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
@@ -28,14 +30,23 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.TransformOrigin
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -69,7 +80,9 @@ fun MessageItem(
     showUsername: Boolean = true,
     currentUserId: Int? = null,
     expandedImageKey: String? = null,
-    isImageClosing: Boolean = false
+    isImageClosing: Boolean = false,
+    isContextMenuOpen: Boolean = false,
+    isContextMenuForThisMessage: Boolean = false
 ) {
     AnimatedVisibility(
         visible = true,
@@ -83,18 +96,45 @@ fun MessageItem(
         ),
         modifier = modifier
     ) {
+        var isPressed by remember { mutableStateOf(false) }
+        var rowPositionInRoot by remember { mutableStateOf(Offset.Zero) }
+        val scaleTarget = if (isPressed && !isContextMenuForThisMessage && !isContextMenuOpen) 0.96f else 1f
+        val scale by animateFloatAsState(
+            targetValue = scaleTarget,
+            animationSpec = spring(
+                dampingRatio = Spring.DampingRatioNoBouncy,
+                stiffness = Spring.StiffnessMediumLow
+            ),
+            visibilityThreshold = 0.001f,
+            label = "messageBubbleScale"
+        )
+
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 8.dp, vertical = 4.dp)
-                .pointerInput(Unit) {
-                    detectTapGestures(
-                        onLongPress = { offset ->
-                            onTapPosition(offset)
-                            onLongPress()
-                        }
-                    )
-                },
+                .onGloballyPositioned { coordinates ->
+                    rowPositionInRoot = coordinates.positionInRoot()
+                }
+                .then(
+                    if (isContextMenuOpen) Modifier
+                    else Modifier.pointerInput(Unit) {
+                        detectTapGestures(
+                            onPress = {
+                                isPressed = true
+                                try {
+                                    awaitRelease()
+                                } finally {
+                                    isPressed = false
+                                }
+                            },
+                            onLongPress = { offset ->
+                                onTapPosition(rowPositionInRoot + offset)
+                                onLongPress()
+                            }
+                        )
+                    }
+                ),
             horizontalArrangement = if (isAuthor) Arrangement.End else Arrangement.Start,
             verticalAlignment = Alignment.Bottom
         ) {
@@ -125,6 +165,11 @@ fun MessageItem(
                             message.files?.firstOrNull()?.let { isImageFilename(it.name) } == true)
                     Box(
                         modifier = Modifier
+                            .graphicsLayer(
+                                scaleX = scale,
+                                scaleY = scale,
+                                transformOrigin = TransformOrigin.Center
+                            )
                             // Max width: 70% of row, min width: content-driven
                             .widthIn(max = maxBubbleWidth)
                             .clip(

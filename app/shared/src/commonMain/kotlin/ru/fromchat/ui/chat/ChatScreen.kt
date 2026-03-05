@@ -1,16 +1,15 @@
 package ru.fromchat.ui.chat
 
 import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.SharedTransitionScope
-import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -50,13 +49,13 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import dev.chrisbanes.haze.HazeProgressive
@@ -65,7 +64,6 @@ import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import dev.chrisbanes.haze.materials.HazeMaterials
 import dev.chrisbanes.haze.rememberHazeState
-import kotlin.time.Clock
 import kotlinx.coroutines.launch
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonObject
@@ -82,12 +80,12 @@ import ru.fromchat.api.WebSocketMessage
 import ru.fromchat.api.WebSocketUpdatesData
 import ru.fromchat.back
 import ru.fromchat.core.Logger
-import ru.fromchat.ui.BackHandler
 import ru.fromchat.ui.HapticFeedbackEvent
 import ru.fromchat.ui.LocalNavController
 import ru.fromchat.ui.rememberHapticFeedback
 import ru.fromchat.ui.scaleOnPress
 import ru.fromchat.utils.formatLastSeen
+import kotlin.time.Clock
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalHazeMaterialsApi::class)
 @Composable
@@ -548,6 +546,7 @@ fun ChatScreen(
                     LazyColumn(
                         state = listState,
                         modifier = Modifier.fillMaxSize(),
+                        userScrollEnabled = !contextMenuState.isOpen,
                         verticalArrangement = Arrangement.spacedBy(4.dp, alignment = Alignment.Bottom)
                     ) {
                         item { Spacer(Modifier.height(innerPadding.calculateTopPadding())) }
@@ -556,34 +555,24 @@ fun ChatScreen(
                             items = panelState.messages,
                             key = { it.id }
                         ) { message ->
-                            var messagePosition by remember { mutableStateOf(IntOffset(0, 0)) }
-                            var tapOffset by remember { mutableStateOf(Offset(0f, 0f)) }
+                            var tapPositionInRoot by remember { mutableStateOf(IntOffset(0, 0)) }
 
-                            Box(
-                                modifier = Modifier
-                                    .hazeSource(hazeState)
-                                    .onGloballyPositioned { coordinates ->
-                                        messagePosition = IntOffset(
-                                            coordinates.positionInRoot().x.toInt(),
-                                            coordinates.positionInRoot().y.toInt()
-                                        )
-                                    }
-                            ) {
+                            Box(modifier = Modifier.hazeSource(hazeState)) {
                                 MessageItem(
                                     message = message,
                                     isAuthor = message.user_id == currentUserId,
+                                    isContextMenuOpen = contextMenuState.isOpen,
+                                    isContextMenuForThisMessage = contextMenuState.isOpen && contextMenuState.message?.id == message.id,
                                     onLongPress = {
+                                        haptic(HapticFeedbackEvent.ContextMenuOpened)
                                         contextMenuState = ContextMenuState(
                                             isOpen = true,
                                             message = message,
-                                            position = IntOffset(
-                                                messagePosition.x + tapOffset.x.toInt(),
-                                                messagePosition.y + tapOffset.y.toInt()
-                                            )
+                                            position = tapPositionInRoot
                                         )
                                     },
                                     onTapPosition = { offset ->
-                                        tapOffset = offset
+                                        tapPositionInRoot = IntOffset(offset.x.toInt(), offset.y.toInt())
                                     },
                                     onImageClick = { msg, idx -> expandedImage = msg to idx },
                                     onImageBounds = { key, rect ->
@@ -601,29 +590,37 @@ fun ChatScreen(
                     }
                 }
 
-                @Suppress("AssignedValueIsNeverRead")
-                MessageContextMenu(
-                    state = contextMenuState,
-                    isAuthor = contextMenuState.message?.user_id == currentUserId,
-                    onDismiss = { contextMenuState = contextMenuState.copy(isOpen = false) },
-                    onReply = { message ->
-                        replyTo = message
-                        if (editingMessage != null) {
-                            editingMessage = null
-                            inputText = ""
-                        }
-                    },
-                    onEdit = { message ->
-                        editingMessage = message
-                        inputText = message.content
-                        replyTo = null
-                    },
-                    onDelete = { message ->
-                        scope.launch {
-                            panel.handleDeleteMessage(message.id)
-                        }
-                    },
-                )
+                BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
+                    val density = LocalDensity.current
+                    val screenWidthPx = with(density) { maxWidth.toPx().toInt() }
+                    val screenHeightPx = with(density) { maxHeight.toPx().toInt() }
+
+                    MessageContextMenu(
+                        state = contextMenuState,
+                        isAuthor = contextMenuState.message?.user_id == currentUserId,
+                        hazeState = hazeState,
+                        screenWidthPx = screenWidthPx,
+                        screenHeightPx = screenHeightPx,
+                        onDismiss = { contextMenuState = contextMenuState.copy(isOpen = false) },
+                        onReply = { message ->
+                            replyTo = message
+                            if (editingMessage != null) {
+                                editingMessage = null
+                                inputText = ""
+                            }
+                        },
+                        onEdit = { message ->
+                            editingMessage = message
+                            inputText = message.content
+                            replyTo = null
+                        },
+                        onDelete = { message ->
+                            scope.launch {
+                                panel.handleDeleteMessage(message.id)
+                            }
+                        },
+                    )
+                }
             }
         }
 

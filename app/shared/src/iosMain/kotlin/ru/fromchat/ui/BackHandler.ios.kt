@@ -18,6 +18,7 @@ actual fun rememberHapticFeedbackInternal(): (Int) -> Unit {
         { ordinal ->
             val style: UIImpactFeedbackStyle = when (ordinal) {
                 HapticFeedbackEvent.MessageSent.ordinal -> UIImpactFeedbackStyle.UIImpactFeedbackStyleMedium
+                HapticFeedbackEvent.ContextMenuOpened.ordinal -> UIImpactFeedbackStyle.UIImpactFeedbackStyleHeavy
                 else -> UIImpactFeedbackStyle.UIImpactFeedbackStyleLight
             }
             val generator = UIImpactFeedbackGenerator(style)
