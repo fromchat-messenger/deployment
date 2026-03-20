@@ -10,7 +10,7 @@ kotlin {
         freeCompilerArgs.addAll("-Xexpect-actual-classes")
     }
 
-    androidLibrary {
+    android {
         namespace = "com.pr0gramm3r101.utils"
         compileSdk = 36
         minSdk = 24

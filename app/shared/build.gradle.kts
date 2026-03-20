@@ -7,7 +7,7 @@ plugins {
 }
 
 kotlin {
-    androidLibrary {
+    android {
         namespace = "ru.fromchat.shared"
         minSdk = 24
         compileSdk = 36
@@ -40,7 +40,7 @@ kotlin {
             implementation(libs.ktor.client.okhttp)
             implementation(libs.androidx.activity.compose)
             implementation(libs.androidx.work.runtime.ktx)
-            implementation("org.purejava:tweetnacl-java:1.1.3")
+            implementation(libs.tweetnacl.java)
         }
 
         commonMain.dependencies {
