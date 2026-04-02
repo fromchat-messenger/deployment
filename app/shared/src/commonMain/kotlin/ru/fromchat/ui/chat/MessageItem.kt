@@ -312,7 +312,11 @@ fun MessageItem(
                                         } else {
                                             message.pendingFileAspectRatio
                                         },
-                                        fileSizeBytes = if (pendingImageFile != null) message.fileSizes?.firstOrNull() else null,
+                                        fileSizeBytes = when {
+                                            pendingImageFile != null -> message.fileSizes?.firstOrNull()
+                                            !isPendingImage -> message.fileSizes?.firstOrNull()
+                                            else -> null
+                                        },
                                         messageId = if (pendingImageFile != null && isPendingImage) message.id else null,
                                         fileIndex = if (pendingImageFile != null && isPendingImage) 0 else null,
                                         onFileClick = null,
@@ -343,7 +347,7 @@ fun MessageItem(
                                     )
                                 }
                                 message.files?.forEachIndexed { index, file ->
-                                    if (hasPendingServerImage && index == 0) return@forEachIndexed
+                                    if (message.pendingFileUri != null && index == 0) return@forEachIndexed
                                     val isImage = isImageFilename(file.name)
                                     val imageKey = if (isImage) "img_${message.id}_$index" else null
                                     val isFirstImage = index == 0 && isImage

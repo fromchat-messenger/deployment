@@ -24,6 +24,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.sizeIn
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.AttachFile
@@ -33,6 +34,7 @@ import androidx.compose.material3.CircularWavyProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Surface
 import androidx.compose.material3.ProgressIndicatorDefaults
 import androidx.compose.material3.WavyProgressIndicatorDefaults
 import androidx.compose.material3.Text
@@ -47,14 +49,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.CompositingStrategy
-import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.graphicsLayer
-import androidx.compose.ui.graphics.withSaveLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
@@ -111,31 +108,24 @@ fun AttachmentPreview(
         else -> false
     }
 
-    val isFile = file != null && !isImage
     val isImageWithThumb = file != null && isImage && dmEnvelope != null && !fileThumbnail.isNullOrBlank()
     val isPendingImage = pendingFileUri != null && isImage
     val isPendingFile = pendingFileUri != null && !isImage
 
     when {
-        isFile -> {
-            FileIconContent(
-                filename = file.name,
+        (file != null && !isImage) || isPendingFile -> {
+            ExpressiveFileAttachmentRow(
+                filename = file?.name
+                    ?: pendingFilename?.takeIf { it.isNotBlank() }
+                    ?: pendingFileUri?.substringAfterLast("/")
+                        ?.substringBefore("?")
+                        ?.takeIf { it.isNotBlank() }
+                    ?: "File",
                 sizeBytes = fileSizeBytes,
-                onClick = onFileClick,
+                onClick = if (file != null) onFileClick else null,
                 isAuthor = isAuthor,
-                isUploading = false,
-                uploadProgress = null,
-                modifier = modifier
-            )
-        }
-        isPendingFile -> {
-            FileIconContent(
-                filename = pendingFilename ?: "File",
-                sizeBytes = null,
-                onClick = null,
-                isAuthor = isAuthor,
-                isUploading = isUploading,
-                uploadProgress = uploadProgress,
+                isUploading = isPendingFile && isUploading,
+                uploadProgress = if (isPendingFile) uploadProgress else null,
                 modifier = modifier
             )
         }
@@ -357,7 +347,9 @@ private fun UploadingImageOverlay(
 @Composable
 private fun ExpressiveUploadIndicator(
     uploadProgress: Int?,
-    modifier: Modifier = Modifier
+    modifier: Modifier = Modifier,
+    indicatorColor: Color? = null,
+    trackColorOverride: Color? = null
 ) {
     val clampedProgress = uploadProgress?.coerceIn(0, 100)
     val indeterminate = clampedProgress == null || clampedProgress == 0
@@ -377,15 +369,15 @@ private fun ExpressiveUploadIndicator(
         animationSpec = ProgressIndicatorDefaults.ProgressAnimationSpec,
         label = "uploadProgress"
     )
-    val primary = MaterialTheme.colorScheme.primary
-    val trackColor = MaterialTheme.colorScheme.onSurface.copy(alpha = 0.28f)
+    val primary = indicatorColor ?: MaterialTheme.colorScheme.primary
+    val trackColor = trackColorOverride
+        ?: MaterialTheme.colorScheme.onSurface.copy(alpha = 0.28f)
     val defaultIndicatorAmplitude = WavyProgressIndicatorDefaults.indicatorAmplitude
-    val ringModifier = Modifier.size(56.dp)
 
     Box(modifier = modifier, contentAlignment = Alignment.Center) {
         if (indeterminate) {
             CircularWavyProgressIndicator(
-                modifier = ringModifier,
+                modifier = Modifier.fillMaxSize(),
                 color = primary,
                 trackColor = trackColor,
                 amplitude = animatedWaveStrength
@@ -393,7 +385,7 @@ private fun ExpressiveUploadIndicator(
         } else {
             CircularWavyProgressIndicator(
                 progress = { animatedProgress },
-                modifier = ringModifier,
+                modifier = Modifier.fillMaxSize(),
                 color = primary,
                 trackColor = trackColor,
                 amplitude = { p -> animatedWaveStrength * defaultIndicatorAmplitude(p) }
@@ -658,101 +650,95 @@ private fun formatFileSize(bytes: Long): String {
     }
 }
 
+@OptIn(ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun FileIconContent(
+private fun ExpressiveFileAttachmentRow(
     filename: String,
     sizeBytes: Long?,
     onClick: (() -> Unit)?,
     isAuthor: Boolean,
-    isUploading: Boolean = false,
-    uploadProgress: Int? = null,
+    isUploading: Boolean,
+    uploadProgress: Int?,
     modifier: Modifier = Modifier
 ) {
-    val contentColor = if (isAuthor) Color.White else MaterialTheme.colorScheme.onSurface
-    val circleBackground = if (isAuthor) Color.White else MaterialTheme.colorScheme.primary
-    val iconTint = if (isAuthor) MaterialTheme.colorScheme.primary else Color.White
+    val headlineColor = if (isAuthor) Color.White else MaterialTheme.colorScheme.onSurface
+    val supportingColor = if (isAuthor) {
+        Color.White.copy(alpha = 0.78f)
+    } else {
+        MaterialTheme.colorScheme.onSurfaceVariant
+    }
+    val leadingSize = 48.dp
     Row(
         modifier = modifier
-            .widthIn(max = 240.dp)
-            .padding(vertical = 8.dp, horizontal = 4.dp)
-            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Box(
-            modifier = Modifier.size(40.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            Box(modifier = Modifier.size(40.dp).then(
-                if (isAuthor) {
-                    Modifier
-                        .graphicsLayer {
-                            compositingStrategy = CompositingStrategy.Offscreen
-                        }
-                        .drawWithContent {
-                            drawCircle(
-                                color = circleBackground,
-                                radius = size.minDimension / 2f,
-                                center = center
-                            )
-                            drawContext.canvas.withSaveLayer(
-                                bounds = Rect(0f, 0f, size.width, size.height),
-                                paint = Paint().apply { blendMode = BlendMode.DstOut }
-                            ) {
-                                drawContent()
-                            }
-                        }
+            .widthIn(max = 268.dp)
+            .padding(horizontal = 12.dp, vertical = 8.dp)
+            .then(
+                if (onClick != null && !isUploading) {
+                    Modifier.clickable(onClick = onClick)
                 } else {
                     Modifier
-                        .background(circleBackground, RoundedCornerShape(20.dp))
                 }
             ),
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(12.dp)
+    ) {
+        Box(
+            modifier = Modifier.size(leadingSize),
             contentAlignment = Alignment.Center
         ) {
-            Icon(
-                imageVector = Icons.Rounded.Download,
-                contentDescription = null,
-                modifier = Modifier.size(22.dp),
-                tint = if (isAuthor) Color.White else iconTint
-            )
-        }
             if (isUploading) {
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .align(Alignment.Center)
-                        .background(
-                            MaterialTheme.colorScheme.surface.copy(alpha = 0.6f),
-                            RoundedCornerShape(20.dp)
-                        ),
-                    contentAlignment = Alignment.Center
-                ) {
-                    if (uploadProgress != null) {
-                        DeterminateCircularProgress(
-                            progress = uploadProgress,
-                            modifier = Modifier.size(28.dp)
-                        )
+                ExpressiveUploadIndicator(
+                    uploadProgress = uploadProgress,
+                    modifier = Modifier.size(leadingSize),
+                    indicatorColor = if (isAuthor) Color.White else null,
+                    trackColorOverride = if (isAuthor) {
+                        Color.White.copy(alpha = 0.28f)
                     } else {
-                        IndefiniteCircularProgress(modifier = Modifier.size(28.dp))
+                        null
+                    }
+                )
+            } else {
+                Surface(
+                    shape = CircleShape,
+                    color = if (isAuthor) {
+                        Color.White.copy(alpha = 0.22f)
+                    } else {
+                        MaterialTheme.colorScheme.secondaryContainer
+                    },
+                    modifier = Modifier.size(leadingSize)
+                ) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Icon(
+                            imageVector = Icons.Rounded.Download,
+                            contentDescription = null,
+                            modifier = Modifier.size(26.dp),
+                            tint = if (isAuthor) {
+                                Color.White
+                            } else {
+                                MaterialTheme.colorScheme.onSecondaryContainer
+                            }
+                        )
                     }
                 }
             }
         }
         Column(
-            modifier = Modifier.padding(start = 12.dp),
             verticalArrangement = Arrangement.spacedBy(2.dp)
         ) {
             Text(
                 text = filename.take(70) + if (filename.length > 70) "…" else "",
-                style = MaterialTheme.typography.bodyMedium,
-                color = contentColor,
+                style = MaterialTheme.typography.titleSmall,
+                color = headlineColor,
                 maxLines = 2
             )
             if (sizeBytes != null) {
                 Text(
                     text = formatFileSize(sizeBytes),
-                    style = MaterialTheme.typography.labelSmall,
-                    fontSize = 12.sp,
-                    color = contentColor.copy(alpha = 0.8f)
+                    style = MaterialTheme.typography.labelMedium,
+                    color = supportingColor
                 )
             }
         }
