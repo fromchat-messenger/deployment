@@ -44,6 +44,7 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.LayoutCoordinates
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.text.font.FontWeight
@@ -101,6 +102,7 @@ fun MessageItem(
     var isPressed by remember { mutableStateOf(false) }
     var avatarPressed by remember(message.id) { mutableStateOf(false) }
     var bubbleBodyPositionInRoot by remember { mutableStateOf(Offset.Zero) }
+    var slackRowLayoutCoords by remember(message.id) { mutableStateOf<LayoutCoordinates?>(null) }
     val scaleTarget = if (isPressed && !isContextMenuForThisMessage && !isContextMenuOpen) 0.96f else 1f
     val avatarScaleTarget = if (avatarPressed && !isContextMenuOpen) 0.96f else 1f
     val scale by animateFloatAsState(
@@ -210,9 +212,9 @@ fun MessageItem(
                     bottomEnd = if (isAuthor) 8.dp else 20.dp
                 )
 
-                val bubbleBodyGestures =
+                val bubblePressAndLongPress =
                     if (isContextMenuOpen) Modifier
-                    else Modifier.pointerInput(Unit) {
+                    else Modifier.pointerInput(isContextMenuOpen, message.id) {
                         detectTapGestures(
                             onPress = {
                                 isPressed = true
@@ -222,17 +224,49 @@ fun MessageItem(
                                     isPressed = false
                                 }
                             },
-                            onLongPress = { offset ->
-                                onTapPosition(bubbleBodyPositionInRoot + offset)
+                            onLongPress = { localOffset ->
+                                onTapPosition(bubbleBodyPositionInRoot + localOffset)
                                 onLongPress()
                             }
                         )
                     }
 
+                val slackRowPressAndLongPress =
+                    if (isContextMenuOpen) Modifier
+                    else Modifier.pointerInput(isContextMenuOpen, message.id) {
+                        detectTapGestures(
+                            onPress = {
+                                isPressed = true
+                                try {
+                                    awaitRelease()
+                                } finally {
+                                    isPressed = false
+                                }
+                            },
+                            onLongPress = { localOffset ->
+                                val coords = slackRowLayoutCoords
+                                if (coords != null && coords.isAttached) {
+                                    onTapPosition(coords.localToRoot(localOffset))
+                                } else {
+                                    onTapPosition(bubbleBodyPositionInRoot + localOffset)
+                                }
+                                onLongPress()
+                            }
+                        )
+                    }
+
+                // Full-width hit target so pressing empty row space still scales the bubble & long-press menu.
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .onGloballyPositioned { slackRowLayoutCoords = it }
+                        .then(slackRowPressAndLongPress)
+                ) {
                 // graphicsLayer must wrap clip/shadow/background so the whole bubble scales on press;
                 // placing it only after background scaled the children but left the bubble chrome unscaled.
                 Box(
                     modifier = Modifier
+                        .align(if (isAuthor) Alignment.BottomEnd else Alignment.BottomStart)
                         .widthIn(max = maxBubbleWidth)
                         .graphicsLayer(
                             scaleX = scale,
@@ -310,7 +344,7 @@ fun MessageItem(
                                 .onGloballyPositioned { coordinates ->
                                     bubbleBodyPositionInRoot = coordinates.positionInRoot()
                                 }
-                                .then(bubbleBodyGestures)
+                                .then(bubblePressAndLongPress)
                         ) {
                             Column {
                         // Reply preview
@@ -533,6 +567,7 @@ fun MessageItem(
                             }
                         }
                     }
+                }
                 }
             }
         }
