@@ -27,6 +27,7 @@ import ru.fromchat.Res
 import ru.fromchat.*
 import ru.fromchat.api.ApiClient
 import ru.fromchat.utils.exclude
+import ru.fromchat.ui.main.settings.SettingsTab
 import ru.fromchat.ui.profile.ProfileScreen
 
 private const val PAGE_CHATS = 0
@@ -37,7 +38,7 @@ private const val PAGE_COUNT = 4
 
 @Suppress("AssignedValueIsNeverRead")
 @Composable
-fun MainScreen(onLogout: () -> Unit = {}) {
+fun MainScreen() {
     val pagerState = rememberPagerState(
         initialPage = PAGE_CHATS,
         pageCount = { PAGE_COUNT },
@@ -97,7 +98,7 @@ fun MainScreen(onLogout: () -> Unit = {}) {
             when (page) {
                 PAGE_CHATS -> ChatsTab()
                 PAGE_CONTACTS -> ContactsTab()
-                PAGE_SETTINGS -> SettingsTab(onLogout = onLogout)
+                PAGE_SETTINGS -> SettingsTab()
                 PAGE_PROFILE -> {
                     val currentUserId = ApiClient.user?.id
                     ProfileScreen(

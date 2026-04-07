@@ -116,6 +116,76 @@
     <string name="dark">Тёмное</string>
     <string name="debug_tools">Отладка API</string>
     <string name="debug_tools_d">Просмотр ответов API профиля и личных сообщений.</string>
+
+    <string name="settings_category_appearance">Оформление</string>
+    <string name="settings_category_appearance_d">Тема и Material You</string>
+    <string name="settings_category_server_tools">Сервер и инструменты</string>
+    <string name="settings_category_server_tools_d">Смена сервера, отладка API</string>
+    <string name="settings_category_notifications">Уведомления</string>
+    <string name="settings_category_notifications_d">Системные настройки уведомлений</string>
+    <string name="settings_category_devices">Устройства</string>
+    <string name="settings_category_devices_d">Активные сессии</string>
+    <string name="settings_category_security">Безопасность</string>
+    <string name="settings_category_security_d">Смена пароля</string>
+    <string name="settings_category_account">Аккаунт</string>
+    <string name="settings_category_account_d">Выйти или удалить аккаунт</string>
+
+    <string name="settings_notifications_title">Уведомления</string>
+    <string name="settings_notifications_body">Чтобы разрешить или отключить уведомления FromChat, откройте настройки уведомлений телефона.</string>
+    <string name="settings_open_notification_settings">Открыть настройки уведомлений</string>
+
+    <string name="settings_devices_title">Устройства</string>
+    <string name="settings_devices_empty">Нет активных сессий</string>
+    <string name="settings_devices_empty_sub">Когда вы войдёте с других телефонов или в браузере, они появятся здесь.</string>
+    <string name="settings_devices_unknown">Неизвестное устройство</string>
+    <string name="settings_devices_last_active">Активность: %1$s</string>
+    <string name="settings_devices_current_hint">Вы вошли на этом устройстве.</string>
+    <string name="settings_devices_this_device">Это устройство</string>
+    <string name="settings_devices_revoke">Выйти</string>
+    <string name="settings_devices_sheet_title">Сведения о сессии</string>
+    <string name="settings_devices_field_session_id">ID сессии</string>
+    <string name="settings_devices_field_device_name">Имя устройства</string>
+    <string name="settings_devices_field_device_type">Тип устройства</string>
+    <string name="settings_devices_field_os">Система</string>
+    <string name="settings_devices_field_os_version">Версия системы</string>
+    <string name="settings_devices_field_browser">Браузер</string>
+    <string name="settings_devices_field_browser_version">Версия браузера</string>
+    <string name="settings_devices_field_brand">Бренд</string>
+    <string name="settings_devices_field_model">Модель</string>
+    <string name="settings_devices_field_signed_in">Вход</string>
+    <string name="settings_devices_field_last_active">Активность</string>
+    <string name="settings_devices_sign_out_sheet">Выйти на этом устройстве</string>
+    <string name="settings_devices_signing_out">Выход…</string>
+    <string name="settings_devices_logout_all">Выйти на всех других устройствах</string>
+    <string name="settings_devices_logout_all_confirm_title">Выйти везде, кроме этого?</string>
+    <string name="settings_devices_logout_all_confirm_body">Вы останетесь в аккаунте только на этом устройстве.</string>
+    <string name="confirm">Подтвердить</string>
+    <string name="cancel">Отмена</string>
+
+    <string name="settings_security_title">Безопасность</string>
+    <string name="settings_current_password">Текущий пароль</string>
+    <string name="settings_new_password">Новый пароль</string>
+    <string name="settings_confirm_new_password">Новый пароль ещё раз</string>
+    <string name="settings_logout_other_sessions">Выйти на всех других устройствах после смены</string>
+    <string name="settings_change_password">Сменить пароль</string>
+    <string name="settings_security_change_password_sub">Обновите пароль для входа</string>
+    <string name="settings_password_changed">Пароль обновлён</string>
+    <string name="settings_security_step_current_title">Текущий пароль</string>
+    <string name="settings_security_step_current_body">Введите пароль, которым пользуетесь сейчас.</string>
+    <string name="settings_security_step_new_title">Новый пароль</string>
+    <string name="settings_security_step_new_body">Придумайте надёжный пароль, который вы здесь ещё не использовали.</string>
+    <string name="settings_security_step_confirm_title">Подтверждение пароля</string>
+    <string name="settings_security_step_confirm_body">Введите новый пароль ещё раз, чтобы убедиться, что без ошибок.</string>
+    <string name="settings_next">Далее</string>
+    <string name="settings_hub_about_sub">Версия, ссылки и другое</string>
+
+    <string name="settings_account_title">Аккаунт</string>
+    <string name="settings_account_delete">Удалить аккаунт</string>
+    <string name="settings_account_delete_d">Безвозвратно удалить аккаунт и данные</string>
+    <string name="settings_account_delete_confirm_title">Удалить аккаунт?</string>
+    <string name="settings_account_delete_confirm_body">Это нельзя отменить.</string>
+    <string name="settings_account_deleted">Аккаунт удалён</string>
+
     <string name="error_unexpected">Что-то пошло не так</string>
     <string name="error_invalid_credentials">Неверное имя пользователя или пароль</string>
     <string name="error_connection">Не удалось подключиться. Проверьте интернет.</string>

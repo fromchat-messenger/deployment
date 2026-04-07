@@ -146,6 +146,76 @@
     <string name="debug_tools">Debug API</string>
     <string name="debug_tools_d">Inspect profile and DM endpoints used by the client.</string>
 
+    <!-- Settings categories -->
+    <string name="settings_category_appearance">Appearance</string>
+    <string name="settings_category_appearance_d">Theme and Material You</string>
+    <string name="settings_category_server_tools">Server and tools</string>
+    <string name="settings_category_server_tools_d">Change server, debug API</string>
+    <string name="settings_category_notifications">Notifications</string>
+    <string name="settings_category_notifications_d">Open system notification settings</string>
+    <string name="settings_category_devices">Devices</string>
+    <string name="settings_category_devices_d">Signed-in sessions</string>
+    <string name="settings_category_security">Security</string>
+    <string name="settings_category_security_d">Change password</string>
+    <string name="settings_category_account">Account</string>
+    <string name="settings_category_account_d">Log out or delete account</string>
+
+    <string name="settings_notifications_title">Notifications</string>
+    <string name="settings_notifications_body">To allow or block alerts from FromChat, use your phone’s notification settings.</string>
+    <string name="settings_open_notification_settings">Open notification settings</string>
+
+    <string name="settings_devices_title">Devices</string>
+    <string name="settings_devices_empty">No active sessions</string>
+    <string name="settings_devices_empty_sub">When you sign in on other phones or browsers, they will show up here.</string>
+    <string name="settings_devices_unknown">Unknown device</string>
+    <string name="settings_devices_last_active">Last active %1$s</string>
+    <string name="settings_devices_current_hint">You are signed in here.</string>
+    <string name="settings_devices_this_device">This device</string>
+    <string name="settings_devices_revoke">Sign out</string>
+    <string name="settings_devices_sheet_title">Session details</string>
+    <string name="settings_devices_field_session_id">Session ID</string>
+    <string name="settings_devices_field_device_name">Device name</string>
+    <string name="settings_devices_field_device_type">Device type</string>
+    <string name="settings_devices_field_os">System</string>
+    <string name="settings_devices_field_os_version">System version</string>
+    <string name="settings_devices_field_browser">Browser</string>
+    <string name="settings_devices_field_browser_version">Browser version</string>
+    <string name="settings_devices_field_brand">Brand</string>
+    <string name="settings_devices_field_model">Model</string>
+    <string name="settings_devices_field_signed_in">Signed in</string>
+    <string name="settings_devices_field_last_active">Last active</string>
+    <string name="settings_devices_sign_out_sheet">Sign out on this device</string>
+    <string name="settings_devices_signing_out">Signing out…</string>
+    <string name="settings_devices_logout_all">Sign out all other devices</string>
+    <string name="settings_devices_logout_all_confirm_title">Sign out everywhere else?</string>
+    <string name="settings_devices_logout_all_confirm_body">You stay signed in on this device only.</string>
+    <string name="confirm">Confirm</string>
+    <string name="cancel">Cancel</string>
+
+    <string name="settings_security_title">Security</string>
+    <string name="settings_current_password">Current password</string>
+    <string name="settings_new_password">New password</string>
+    <string name="settings_confirm_new_password">Confirm new password</string>
+    <string name="settings_logout_other_sessions">Sign out all other devices after change</string>
+    <string name="settings_change_password">Change password</string>
+    <string name="settings_security_change_password_sub">Update the password you use to sign in</string>
+    <string name="settings_password_changed">Password updated</string>
+    <string name="settings_security_step_current_title">Current password</string>
+    <string name="settings_security_step_current_body">Enter the password you use now to continue.</string>
+    <string name="settings_security_step_new_title">New password</string>
+    <string name="settings_security_step_new_body">Choose a strong password you have not used here before.</string>
+    <string name="settings_security_step_confirm_title">Confirm new password</string>
+    <string name="settings_security_step_confirm_body">Type your new password again to make sure it matches.</string>
+    <string name="settings_next">Next</string>
+    <string name="settings_hub_about_sub">Version, links, and more</string>
+
+    <string name="settings_account_title">Account</string>
+    <string name="settings_account_delete">Delete account</string>
+    <string name="settings_account_delete_d">Permanently delete your account and data</string>
+    <string name="settings_account_delete_confirm_title">Delete account?</string>
+    <string name="settings_account_delete_confirm_body">This cannot be undone.</string>
+    <string name="settings_account_deleted">Account deleted</string>
+
     <!-- Error Messages -->
     <string name="error_unexpected">Something went wrong</string>
     <string name="error_invalid_credentials">Wrong username or password</string>

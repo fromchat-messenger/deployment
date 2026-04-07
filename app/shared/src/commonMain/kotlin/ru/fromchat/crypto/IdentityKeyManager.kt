@@ -120,6 +120,17 @@ object IdentityKeyManager {
     }
 
     /**
+     * Clears in-memory keys and secure storage (call on logout / account deletion).
+     */
+    suspend fun clearLocalKeys() {
+        currentKeys = null
+        runCatching {
+            secureSettings.remove("identity_public_key")
+            secureSettings.remove("identity_private_key")
+        }
+    }
+
+    /**
      * Get current keys from memory (non-suspend, returns cached keys only)
      */
     fun getCurrentKeys(): IdentityKeys? {

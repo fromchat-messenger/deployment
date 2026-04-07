@@ -4,9 +4,10 @@ alwaysApply: true
 
 When working with the mobile app:
 
+- **Always verify before finishing:** run the relevant Gradle compile/build for what you changed (at minimum `:app:shared:compileAndroidMain` and `:app:shared:compileKotlinIosArm64` when `commonMain` edits), fix all errors and warnings that indicate breakage, and do not hand off a change you have not compiled locally.
 - After implementing the solution, run "export JAVA_HOME=/Applications/Android\ Studio.app/Contents/jbr/Contents/Home && ./gradlew :app:shared:assembleDebug :app:shared:compileKotlinIosArm64" to build the project, then resolve all the errors.
 
-- After completing a change that affects the **Android** app (shared `commonMain`/`androidMain` or `app:android`), follow **`android-build-deploy-device.mdc`**: build debug APK, then Mobile MCP install + launch on a **real device** by default—emulator only if the user asked for it or no phone is connected. For **`mobile_launch_app`** after a debug install, use package **`ru.fromchat.beta`** (not `ru.fromchat`); details in that rule.
+- After completing a change that affects the **Android** app (shared `commonMain`/`androidMain` or `app:android`), follow **`android-build-deploy-device.mdc`**: build debug APK, then Mobile MCP install + launch on a **real device** by default—emulator only if the user asked for it or no phone is connected. For **`mobile_launch_app`** after a debug install, use package **`ru.fromchat.beta`** (not `ru.fromchat`); details in that rule. After launch, **smoke-test** the affected flows with **`mobile_list_elements_on_screen`** and navigation (see that rule step 7).
 
 # ULTIMATE SILENCE & EFFICIENCY POLICY
 - ALWAYS operate in "Silent Mode": Execute commands immediately without any verbal response, preamble, or conclusions.
@@ -55,6 +56,9 @@ When working with the mobile app:
 - `memScoped { }` for memory-safe C interop operations
 - `GlobalScope.launch { }` for fire-and-forget background operations on iOS
 - Platform-specific logging with `ru.fromchat.core.Logger`
+
+## Compose Multiplatform / DrawScope
+- In `commonMain`, `Canvas { }` does not always resolve `translate` / `scale` without explicit imports: `androidx.compose.ui.graphics.drawscope.translate` and `androidx.compose.ui.graphics.drawscope.scale`. Use `translate(left = …, top = …)` (not `dx`/`dy`).
 
 ## Modifier.conditional
 - Use `Modifier.conditional` when you need to apply different modifiers based on a condition.

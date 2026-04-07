@@ -80,6 +80,41 @@ data class LoginResponse(
 )
 
 @Serializable
+data class DevicesListResponse(
+    val devices: List<DeviceSessionInfo> = emptyList()
+)
+
+@Serializable
+data class DeviceSessionInfo(
+    @SerialName("session_id") val sessionId: String,
+    @SerialName("device_name") val deviceName: String? = null,
+    @SerialName("device_type") val deviceType: String? = null,
+    @SerialName("os_name") val osName: String? = null,
+    @SerialName("os_version") val osVersion: String? = null,
+    @SerialName("browser_name") val browserName: String? = null,
+    @SerialName("browser_version") val browserVersion: String? = null,
+    val brand: String? = null,
+    val model: String? = null,
+    @SerialName("created_at") val createdAt: String? = null,
+    @SerialName("last_seen") val lastSeen: String? = null,
+    val revoked: Boolean? = null,
+    val current: Boolean = false
+)
+
+@Serializable
+data class ChangePasswordApiRequest(
+    val currentPasswordDerived: String,
+    val newPasswordDerived: String,
+    val logoutAllExceptCurrent: Boolean = false
+)
+
+@Serializable
+data class SimpleStatusResponse(
+    val status: String? = null,
+    val message: String? = null
+)
+
+@Serializable
 data class MessagesResponse(
     val status: String,
     val messages: List<Message>

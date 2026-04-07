@@ -59,6 +59,19 @@ object UpdateSyncManager {
         ConnectionStateStore.updateSeqAndMissed(lastSeq = _lastSeq.value, missedCount = missedCount)
     }
 
+    fun resetInMemoryOnLogout() {
+        _lastSeq.value = 0
+        _lastMissedCount.value = null
+        gapDetectionInProgress = false
+        ConnectionStateStore.updateSeqAndMissed(lastSeq = 0, missedCount = null)
+    }
+
+    suspend fun clearPersistedSeqForUser(userId: Int) {
+        runCatching {
+            settings.remove("updates_last_seq_user_$userId")
+        }
+    }
+
     /**
      * Ask the backend for missed updates between our lastSeq and the current sequence.
      * This call is idempotent while in progress and will no-op if there is no active

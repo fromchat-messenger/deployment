@@ -445,19 +445,87 @@ object ApiClient {
         }
     }
 
-    suspend fun logout() {
-        runCatching {
-            http.get("${Config.apiBaseUrl}/logout")
-        }
+    suspend fun listDevices(): List<DeviceSessionInfo> =
+        http
+            .get("${Config.apiBaseUrl}/devices") {
+                contentType(ContentType.Application.Json)
+            }
+            .body<DevicesListResponse>()
+            .devices
 
+    suspend fun revokeDeviceSession(sessionId: String) {
+        http.delete("${Config.apiBaseUrl}/devices/$sessionId") {
+            contentType(ContentType.Application.Json)
+        }
+    }
+
+    suspend fun revokeAllOtherDeviceSessions() {
+        http.post("${Config.apiBaseUrl}/devices/logout-all") {
+            contentType(ContentType.Application.Json)
+        }
+    }
+
+    suspend fun changePassword(
+        currentPasswordDerived: String,
+        newPasswordDerived: String,
+        logoutAllExceptCurrent: Boolean
+    ) {
+        http.post("${Config.apiBaseUrl}/change-password") {
+            contentType(ContentType.Application.Json)
+            setBody(
+                ChangePasswordApiRequest(
+                    currentPasswordDerived = currentPasswordDerived,
+                    newPasswordDerived = newPasswordDerived,
+                    logoutAllExceptCurrent = logoutAllExceptCurrent
+                )
+            )
+        }
+    }
+
+    /**
+     * Self-delete account. Tries `/account/delete` (web client); falls back to `/delete` (bare FastAPI route) on 404.
+     */
+    suspend fun deleteAccount(): SimpleStatusResponse {
+        try {
+            return http
+                .post("${Config.apiBaseUrl}/account/delete") {
+                    contentType(ContentType.Application.Json)
+                }
+                .body()
+        } catch (e: ClientRequestException) {
+            if (e.response.status.value != 404) throw e
+            return http
+                .post("${Config.apiBaseUrl}/delete") {
+                    contentType(ContentType.Application.Json)
+                }
+                .body()
+        }
+    }
+
+    /**
+     * Clears tokens, caches, and crypto material without calling the server (use after account deletion
+     * or together with [logout] after remote logout).
+     */
+    suspend fun clearLocalSession() {
+        val uid = user?.id
         secureSettings.remove("auth_token")
         settings.remove("user_info")
         settings.remove("current_user_id")
         token = null
         user = null
+        uid?.let { UpdateSyncManager.clearPersistedSeqForUser(it) }
+        UpdateSyncManager.resetInMemoryOnLogout()
+        runCatching { IdentityKeyManager.clearLocalKeys() }
         runCatching { ProfileCache.clear() }
         runCatching { DmPanelCache.clearAll() }
         runCatching { PublicChatPanelCache.clear() }
+    }
+
+    suspend fun logout() {
+        runCatching {
+            http.get("${Config.apiBaseUrl}/logout")
+        }
+        clearLocalSession()
     }
 
     fun getTokenSafely() = token ?: throw IllegalStateException("Not authenticated")

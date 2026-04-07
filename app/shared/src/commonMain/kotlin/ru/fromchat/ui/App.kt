@@ -48,8 +48,45 @@ import ru.fromchat.ui.profile.ProfileScreen
 import ru.fromchat.ui.setup.ServerConfigScreen
 import ru.fromchat.ui.LocalSystemBarsVisibility
 import ru.fromchat.ui.rememberSystemBarsController
+import androidx.compose.animation.AnimatedContentScope
+import androidx.compose.animation.core.FiniteAnimationSpec
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.navigation.NavBackStackEntry
+import androidx.navigation.NavGraphBuilder
+import ru.fromchat.ui.main.settings.SettingsAccountScreen
+import ru.fromchat.ui.main.settings.SettingsAppearanceScreen
+import ru.fromchat.ui.main.settings.SettingsDevicesScreen
+import ru.fromchat.ui.main.settings.SettingsNotificationsScreen
+import ru.fromchat.ui.main.settings.SettingsRoutes
+import ru.fromchat.ui.main.settings.SettingsSecurityHubScreen
+import ru.fromchat.ui.main.settings.SettingsSecurityPasswordFlowScreen
+import ru.fromchat.ui.main.settings.SettingsServerToolsScreen
 
 val LocalNavController = compositionLocalOf<NavController> { error("NavController not provided") }
+
+private fun NavGraphBuilder.settingsSlideComposable(
+    route: String,
+    animationSpec: FiniteAnimationSpec<IntOffset>,
+    content: @Composable AnimatedContentScope.(NavBackStackEntry) -> Unit,
+) {
+    composable(
+        route = route,
+        enterTransition = {
+            slideInHorizontally(animationSpec = animationSpec) { it }
+        },
+        exitTransition = {
+            slideOutHorizontally(animationSpec = animationSpec) { -it }
+        },
+        popEnterTransition = {
+            slideInHorizontally(animationSpec = animationSpec) { -it }
+        },
+        popExitTransition = {
+            slideOutHorizontally(animationSpec = animationSpec) { it }
+        },
+        content = content,
+    )
+}
 
 @Composable
 fun App(scrollToMessageId: Int? = null, startAtPublicChat: Boolean = false) {
@@ -199,13 +236,7 @@ fun App(scrollToMessageId: Int? = null, startAtPublicChat: Boolean = false) {
                     }
 
                     composable("chat") {
-                        MainScreen(
-                            onLogout = {
-                                navController.navigate("login") {
-                                    popUpTo("chat") { inclusive = true }
-                                }
-                            }
-                        )
+                        MainScreen()
                     }
 
                     composable("chats/publicChat") {
@@ -307,8 +338,50 @@ fun App(scrollToMessageId: Int? = null, startAtPublicChat: Boolean = false) {
                         )
                     }
 
-                    composable("about") {
+                    settingsSlideComposable("about", animationSpec) {
                         AboutScreen()
+                    }
+
+                    val navigateToLoginClearingChat = {
+                        navController.navigate("login") {
+                            popUpTo("chat") { inclusive = true }
+                        }
+                    }
+
+                    settingsSlideComposable(SettingsRoutes.Appearance, animationSpec) {
+                        SettingsAppearanceScreen(onBack = { navController.navigateUp() })
+                    }
+                    settingsSlideComposable(SettingsRoutes.ServerTools, animationSpec) {
+                        SettingsServerToolsScreen(
+                            onBack = { navController.navigateUp() },
+                            outerNav = navController
+                        )
+                    }
+                    settingsSlideComposable(SettingsRoutes.Notifications, animationSpec) {
+                        SettingsNotificationsScreen(onBack = { navController.navigateUp() })
+                    }
+                    settingsSlideComposable(SettingsRoutes.Devices, animationSpec) {
+                        SettingsDevicesScreen(onBack = { navController.navigateUp() })
+                    }
+                    settingsSlideComposable(SettingsRoutes.Security, animationSpec) {
+                        SettingsSecurityHubScreen(
+                            onBack = { navController.navigateUp() },
+                            onChangePassword = { navController.navigate(SettingsRoutes.SecurityPasswordFlow) }
+                        )
+                    }
+                    settingsSlideComposable(SettingsRoutes.SecurityPasswordFlow, animationSpec) {
+                        SettingsSecurityPasswordFlowScreen(
+                            onBack = { navController.navigateUp() },
+                            onDonePopToHub = {
+                                navController.popBackStack(SettingsRoutes.Security, inclusive = false)
+                            }
+                        )
+                    }
+                    settingsSlideComposable(SettingsRoutes.Account, animationSpec) {
+                        SettingsAccountScreen(
+                            onBack = { navController.navigateUp() },
+                            onLogout = navigateToLoginClearingChat
+                        )
                     }
                     }
                 }

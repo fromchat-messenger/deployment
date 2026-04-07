@@ -15,6 +15,7 @@ Whenever you change anything under **`app:android`**, **`app:shared`** (`commonM
    `app/android/build/outputs/apk/debug/android-debug.apk`  
    in this repo.
 6. For **each** same device: **`mobile_launch_app`** with `packageName` **`ru.fromchat.beta`**. The debug APK from `assembleDebug` uses `applicationIdSuffix = ".beta"` (`app/android/build.gradle.kts`), so the on-device package is **`ru.fromchat.beta`**, not `ru.fromchat`—`ru.fromchat` will fail to launch after a debug install. (Release / no-suffix id is `ru.fromchat`.)
+7. **Smoke-test after launch** (when a device is online): use **`mobile_list_elements_on_screen`** on the chosen device, then exercise the flows your change touched (e.g. open **Settings**, drill into **Appearance**, **Notifications**, **Devices**, **Security** steps, **Account**, **About**—tap through and use **Back**). Fix any crash or obvious broken UI before finishing.
 
 Also run **`:app:shared:compileKotlinIosArm64`** (and fix errors) when shared Kotlin changes should stay valid for iOS—either with the same Gradle invocation as in `general.mdc` or right after the Android APK build.
 

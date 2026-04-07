@@ -1,11 +1,14 @@
 package ru.fromchat.core
 
-import com.pr0gramm3r101.utils.settings.Settings
+import com.pr0gramm3r101.utils.settings.Settings as PlatformSettings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.builtins.ListSerializer
+import kotlinx.serialization.json.Json
+import ru.fromchat.api.DeviceSessionInfo
 import ru.fromchat.ui.Theme
 
 /**
@@ -21,8 +24,10 @@ object Settings {
     private const val THEME_KEY = "theme"
     private const val SERVER_URL_KEY = "server_url"
     private const val HTTPS_ENABLED_KEY = "https_enabled"
+    private const val DEVICE_SESSIONS_CACHE_KEY = "device_sessions_cache_v1"
 
-    private val settings = Settings()
+    private val settings = PlatformSettings()
+    private val deviceSessionsJson = Json { ignoreUnknownKeys = true }
 
     private fun runIO(block: suspend CoroutineScope.() -> Unit) {
         CoroutineScope(Dispatchers.IO).launch(block = block)
@@ -78,5 +83,31 @@ object Settings {
             serverUrl = value.serverUrl
             httpsEnabled = value.httpsEnabled
         }
+
+    /** Cached device sessions (JSON). Shown immediately while refreshing from the network. */
+    fun readDeviceSessionsCache(): List<DeviceSessionInfo>? = runBlocking {
+        val raw = settings.getString(DEVICE_SESSIONS_CACHE_KEY)
+        if (raw.isEmpty()) return@runBlocking null
+        runCatching {
+            deviceSessionsJson.decodeFromString(
+                ListSerializer(DeviceSessionInfo.serializer()),
+                raw
+            )
+        }.getOrNull()
+    }
+
+    fun writeDeviceSessionsCache(list: List<DeviceSessionInfo>) {
+        runIO {
+            val enc = deviceSessionsJson.encodeToString(
+                ListSerializer(DeviceSessionInfo.serializer()),
+                list
+            )
+            settings.putString(DEVICE_SESSIONS_CACHE_KEY, enc)
+        }
+    }
+
+    fun clearDeviceSessionsCache() {
+        runIO { settings.remove(DEVICE_SESSIONS_CACHE_KEY) }
+    }
 }
 
