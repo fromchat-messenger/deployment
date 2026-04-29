@@ -156,9 +156,9 @@
     <string name="server_ip_label">Server IP or hostname</string>
     <string name="server_ip_hint">192.168.1.10</string>
     <string name="api_port_label">Port</string>
-    <string name="api_port_hint">8301</string>
+    <string name="api_port_hint"></string>
     <string name="calls_port_label">Calls port</string>
-    <string name="calls_port_hint">8302</string>
+    <string name="calls_port_hint"></string>
     <string name="https_enabled">Secure connection</string>
     <string name="server_config_https_hint">Uses HTTPS. Turn off only for plain HTTP.</string>
     <string name="server_config_https_headline">HTTPS</string>

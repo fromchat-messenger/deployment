@@ -129,9 +129,9 @@
     <string name="server_ip_label">IP или имя сервера</string>
     <string name="server_ip_hint">192.168.1.10</string>
     <string name="api_port_label">Порт</string>
-    <string name="api_port_hint">8301</string>
+    <string name="api_port_hint"></string>
     <string name="calls_port_label">Порт звонков</string>
-    <string name="calls_port_hint">8302</string>
+    <string name="calls_port_hint"></string>
     <string name="https_enabled">Защищённое соединение</string>
     <string name="server_config_https_hint">HTTPS. Отключайте только для HTTP без шифрования.</string>
     <string name="server_config_https_headline">HTTPS</string>

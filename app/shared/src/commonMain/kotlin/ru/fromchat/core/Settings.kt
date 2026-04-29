@@ -11,14 +11,19 @@ import kotlinx.serialization.json.Json
 import ru.fromchat.api.DeviceSessionInfo
 import ru.fromchat.ui.Theme
 
+/** Default WebRTC / calls port when none is stored or the field is left empty in UI. */
+const val DEFAULT_CALLS_PORT = 8303
+
 /**
- * Server configuration: [serverIp], HTTP(S) [apiPort], optional [callsPort] (WebRTC / HAProxy; null = calls disabled). First install defaults to fromchat.ru:443 with calls on 8302.
+ * Server configuration: [serverIp], HTTP(S) [apiPort], [callsPort] for WebRTC / HAProxy (defaults to [DEFAULT_CALLS_PORT]).
+ * [callsEnabled] is updated when saving server settings (probe on the calls port); defaults to true when unset.
  */
 data class ServerConfigData(
     val serverIp: String,
     val apiPort: Int,
-    val callsPort: Int?,
+    val callsPort: Int,
     val httpsEnabled: Boolean,
+    val callsEnabled: Boolean = true,
 )
 
 object Settings {
@@ -28,8 +33,9 @@ object Settings {
     private const val SERVER_URL_KEY = "server_url"
     private const val SERVER_IP_KEY = "server_ip"
     private const val API_PORT_KEY = "api_port"
-    /** Stored as Int; values ≤ 0 mean unset (calls disabled). */
+    /** Stored as Int; invalid values fall back to [DEFAULT_CALLS_PORT] when read. */
     private const val CALLS_PORT_KEY = "calls_port"
+    private const val CALLS_ENABLED_KEY = "calls_enabled"
     private const val HTTPS_ENABLED_KEY = "https_enabled"
     private const val DEVICE_SESSIONS_CACHE_KEY = "device_sessions_cache_v1"
     private const val LAST_SERVER_INSTANCE_ID_KEY = "last_server_instance_id"
@@ -105,7 +111,7 @@ object Settings {
             if (!settings.contains(SERVER_IP_KEY)) {
                 settings.putString(SERVER_IP_KEY, "fromchat.ru")
                 settings.putInt(API_PORT_KEY, 443)
-                settings.putInt(CALLS_PORT_KEY, 8302)
+                settings.putInt(CALLS_PORT_KEY, DEFAULT_CALLS_PORT)
                 if (!settings.contains(HTTPS_ENABLED_KEY)) {
                     settings.putBoolean(HTTPS_ENABLED_KEY, true)
                 }
@@ -116,21 +122,28 @@ object Settings {
             }
             val apiPort = settings.getInt(API_PORT_KEY, 443).coerceIn(1, 65535)
             val rawCalls = settings.getInt(CALLS_PORT_KEY, -1)
-            val calls = if (rawCalls > 0 && rawCalls <= 65535) rawCalls else null
+            val callsPort = if (rawCalls in 1..65535) rawCalls else DEFAULT_CALLS_PORT
             val https = settings.getBoolean(HTTPS_ENABLED_KEY, true)
+            val callsEnabled =
+                if (settings.contains(CALLS_ENABLED_KEY)) {
+                    settings.getBoolean(CALLS_ENABLED_KEY, true)
+                } else {
+                    true
+                }
             ServerConfigData(
                 serverIp = ip,
                 apiPort = apiPort,
-                callsPort = calls,
+                callsPort = callsPort,
                 httpsEnabled = https,
+                callsEnabled = callsEnabled,
             )
         }
         set(value) = runIO {
             settings.putString(SERVER_IP_KEY, value.serverIp.trim())
             settings.putInt(API_PORT_KEY, value.apiPort.coerceIn(1, 65535))
-            val callsStored = value.callsPort?.coerceIn(1, 65535) ?: -1
-            settings.putInt(CALLS_PORT_KEY, callsStored)
+            settings.putInt(CALLS_PORT_KEY, value.callsPort.coerceIn(1, 65535))
             settings.putBoolean(HTTPS_ENABLED_KEY, value.httpsEnabled)
+            settings.putBoolean(CALLS_ENABLED_KEY, value.callsEnabled)
         }
 
     /** Cached device sessions (JSON). Shown immediately while refreshing from the network. */

@@ -35,9 +35,9 @@ object Config {
         _serverConfig.value = config
     }
 
-    /** Voice/video calls (LiveKit) are enabled only when a calls (WebRTC) port is configured. */
+    /** Voice/video calls when the last server-config apply probe to the calls port succeeded. */
     val callsEnabled: Boolean
-        get() = config.callsPort != null
+        get() = config.callsEnabled
 
     /**
      * LiveKit signaling WebSocket URL: same host and API port as HTTPS reverse proxy (`/api/livekit/rtc`).

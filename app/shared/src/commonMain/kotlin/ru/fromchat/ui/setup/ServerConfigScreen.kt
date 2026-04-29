@@ -107,6 +107,7 @@ import dev.chrisbanes.haze.rememberHazeState
 import kotlin.time.TimeSource
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withTimeout
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import org.jetbrains.compose.resources.getString
@@ -114,13 +115,12 @@ import org.jetbrains.compose.resources.stringResource
 import ru.fromchat.Res
 import ru.fromchat.api.ApiClient
 import ru.fromchat.api.WebSocketManager
-import ru.fromchat.api_port_hint
 import ru.fromchat.api_port_label
 import ru.fromchat.back
-import ru.fromchat.calls_port_hint
 import ru.fromchat.calls_port_label
 import ru.fromchat.cancel
 import ru.fromchat.confirm
+import ru.fromchat.core.DEFAULT_CALLS_PORT
 import ru.fromchat.core.ServerConfigData
 import ru.fromchat.core.Settings
 import ru.fromchat.core.config.Config
@@ -137,7 +137,6 @@ import ru.fromchat.server_config_snackbar_api_fail
 import ru.fromchat.server_config_snackbar_defaults
 import ru.fromchat.server_config_snackbar_ok_api_calls_bad
 import ru.fromchat.server_config_snackbar_ok_calls
-import ru.fromchat.server_config_snackbar_ok_calls_skip
 import ru.fromchat.server_config_subtitle
 import ru.fromchat.server_config_title
 import ru.fromchat.server_ip_hint
@@ -206,6 +205,13 @@ private fun apiBaseUrlFor(config: ServerConfigData): String {
     return "$scheme://${config.serverIp}:${config.apiPort}/api"
 }
 
+private suspend fun probeCallsReachable(config: ServerConfigData): Boolean {
+    val urlScheme = if (config.httpsEnabled) "https" else "http"
+    val host = config.serverIp.trim()
+    val root = "$urlScheme://${hostForAuthority(host)}:${config.callsPort}/"
+    return ApiClient.probeHttpGet(root)
+}
+
 private fun resolvedApiPort(apiPortText: String): Int {
     val t = apiPortText.trim()
     if (t.isEmpty()) return 443
@@ -213,9 +219,12 @@ private fun resolvedApiPort(apiPortText: String): Int {
     return n.takeIf { it in 1..65535 } ?: 443
 }
 
-private fun resolvedCallsPort(callsPortText: String): Int? =
-    if (callsPortText.isBlank()) null
-    else callsPortText.trim().toIntOrNull()?.takeIf { it in 1..65535 }
+/** Blank calls field uses [DEFAULT_CALLS_PORT] instead of disabling calls. */
+private fun effectiveCallsPort(callsPortText: String): Int {
+    val t = callsPortText.trim()
+    if (t.isBlank()) return DEFAULT_CALLS_PORT
+    return t.toIntOrNull()?.takeIf { it in 1..65535 } ?: DEFAULT_CALLS_PORT
+}
 
 private suspend fun LazyListState.scrollFocusedItemIntoView(
     itemIndex: Int,
@@ -421,7 +430,7 @@ fun ServerConfigScreen() {
         val c = Settings.serverConfig
         serverIp = c.serverIp
         apiPortText = c.apiPort.toString()
-        callsPortText = c.callsPort?.toString().orEmpty()
+        callsPortText = c.callsPort.toString()
         httpsEnabled = c.httpsEnabled
     }
 
@@ -447,7 +456,7 @@ fun ServerConfigScreen() {
     val callsPortError = callsPortText.isNotEmpty() && !isValidPortNumber(callsPortText)
 
     val apiPortEffective = resolvedApiPort(apiPortText)
-    val callsPortParsed = resolvedCallsPort(callsPortText)
+    val callsPortParsed = effectiveCallsPort(callsPortText)
     val canApply =
         hostOk &&
             !apiPortError &&
@@ -457,7 +466,7 @@ fun ServerConfigScreen() {
     val resetToDefaults = {
         serverIp = "fromchat.ru"
         apiPortText = "443"
-        callsPortText = "8302"
+        callsPortText = DEFAULT_CALLS_PORT.toString()
         httpsEnabled = true
         scope.launch {
             snackbarHostState.showSnackbar(strSnackbarDefaults)
@@ -466,6 +475,8 @@ fun ServerConfigScreen() {
 
     val verifyServer: () -> Unit = {
         scope.launch {
+            // Do not block actual checks on snackbar dismissal.
+            launch { snackbarHostState.showSnackbar("Checking...") }
             val host = serverIp.trim()
             if (host.isEmpty() || !isValidIpOrHostname(host)) {
                 snackbarHostState.showSnackbar(strHostError)
@@ -480,7 +491,7 @@ fun ServerConfigScreen() {
                 return@launch
             }
             val apiPort = resolvedApiPort(apiPortText)
-            val calls = resolvedCallsPort(callsPortText)
+            val calls = effectiveCallsPort(callsPortText)
             val tentative = ServerConfigData(
                 serverIp = host,
                 apiPort = apiPort,
@@ -488,32 +499,24 @@ fun ServerConfigScreen() {
                 httpsEnabled = httpsEnabled,
             )
             val apiBase = apiBaseUrlFor(tentative)
-            val pingMark = TimeSource.Monotonic.markNow()
-            val id = runCatching { ApiClient.fetchServerInstanceId(apiBase) }
-                .getOrNull()
-                ?.trim()
-                .orEmpty()
-            val pingMs = pingMark.elapsedNow().inWholeMilliseconds
-                .toInt()
-                .coerceAtLeast(0)
-            if (id.isEmpty()) {
-                snackbarHostState.showSnackbar(strSnackbarApiFail)
-                return@launch
-            }
-            val urlScheme = if (httpsEnabled) "https" else "http"
-            val callsOk = if (calls != null) {
-                val root = "$urlScheme://${hostForAuthority(host)}:${calls}/"
-                ApiClient.probeHttpGet(root)
-            } else {
-                null
-            }
-            val msg = when {
-                calls == null ->
-                    getString(Res.string.server_config_snackbar_ok_calls_skip, pingMs)
-                callsOk == true ->
-                    getString(Res.string.server_config_snackbar_ok_calls, pingMs)
-                else -> strSnackbarOkApiCallsBad
-            }
+
+            val msg = runCatching {
+                withTimeout(3000) {
+                    val pingMark = TimeSource.Monotonic.markNow()
+                    val id = ApiClient.fetchServerInstanceId(apiBase)
+                    val pingMs = pingMark.elapsedNow().inWholeMilliseconds
+                        .toInt()
+                        .coerceAtLeast(0)
+                    if (id.isEmpty()) return@withTimeout strSnackbarApiFail
+
+                    val urlScheme = if (httpsEnabled) "https" else "http"
+                    val root = "$urlScheme://${hostForAuthority(host)}:${calls}/"
+                    val callsOk = ApiClient.probeHttpGet(root)
+                    if (callsOk) getString(Res.string.server_config_snackbar_ok_calls, pingMs)
+                    else strSnackbarOkApiCallsBad
+                }
+            }.getOrElse { strSnackbarApiFail }
+
             snackbarHostState.showSnackbar(msg)
         }
     }
@@ -621,7 +624,8 @@ fun ServerConfigScreen() {
 
                                     val bearer = ApiClient.token?.trim().orEmpty()
                                     if (bearer.isEmpty()) {
-                                        Config.updateServerConfig(tentative)
+                                        val callsOk = probeCallsReachable(tentative)
+                                        Config.updateServerConfig(tentative.copy(callsEnabled = callsOk))
                                         Settings.lastKnownServerInstanceId = newId
                                         WebSocketManager.disconnect()
                                         withContext(Dispatchers.Main) {
@@ -646,7 +650,8 @@ fun ServerConfigScreen() {
                                         return@launch
                                     }
 
-                                    Config.updateServerConfig(tentative)
+                                    val callsOk = probeCallsReachable(tentative)
+                                    Config.updateServerConfig(tentative.copy(callsEnabled = callsOk))
                                     Settings.lastKnownServerInstanceId = newId
                                     WebSocketManager.disconnect()
                                     WebSocketManager.connect(forceRestart = true)
@@ -839,7 +844,7 @@ fun ServerConfigScreen() {
                                                     overflow = TextOverflow.Ellipsis,
                                                 )
                                             },
-                                            placeholder = { Text(stringResource(Res.string.api_port_hint)) },
+                                            placeholder = { Text("8301") },
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .onFocusChanged {
@@ -872,7 +877,7 @@ fun ServerConfigScreen() {
                                                     overflow = TextOverflow.Ellipsis,
                                                 )
                                             },
-                                            placeholder = { Text(stringResource(Res.string.calls_port_hint)) },
+                                            placeholder = { Text(DEFAULT_CALLS_PORT.toString()) },
                                             modifier = Modifier
                                                 .fillMaxWidth()
                                                 .onFocusChanged {
