@@ -58,7 +58,11 @@ import ru.fromchat.api.UserStatusStore
 import ru.fromchat.api.WebSocketManager
 import ru.fromchat.api.WebSocketMessage
 import ru.fromchat.api.WebSocketUpdatesData
+import ru.fromchat.api.outbox.OutgoingMessageCoordinator
+import ru.fromchat.api.outbox.scheduleOutboxProcessing
+import ru.fromchat.core.cache.CacheContext
 import ru.fromchat.core.Logger
+import ru.fromchat.core.cache.ensureFromChatCacheGeneration
 import ru.fromchat.core.config.Config
 import ru.fromchat.net.NetworkConnectivity
 import ru.fromchat.ui.auth.LoginScreen
@@ -191,10 +195,26 @@ fun App(
             Config.initialize()
         }
 
+        runCatching { ensureFromChatCacheGeneration() }
+
         runCatching { NetworkConnectivity.ensureStarted() }
 
         // Load persisted token and user data
         ApiClient.loadPersistedData()
+
+        val hasTokenForBootstrap = ApiClient.token?.isNotEmpty() == true
+        if (hasTokenForBootstrap) {
+            when (ru.fromchat.core.instance.bootstrapSessionInstance(hasToken = true)) {
+                ru.fromchat.core.instance.SessionBootstrapResult.LogoutRequired -> {
+                    ru.fromchat.core.instance.logoutIfInstanceUnsupported()
+                    startDestination = "login"
+                    return@LaunchedEffect
+                }
+                ru.fromchat.core.instance.SessionBootstrapResult.OfflineCached,
+                ru.fromchat.core.instance.SessionBootstrapResult.Ready,
+                -> Unit
+            }
+        }
 
         runCatching { ProfileCache.hydrateFromDisk() }
 
@@ -235,6 +255,15 @@ fun App(
                 Lifecycle.Event.ON_START -> {
                     AppForeground.setForeground(true)
                     WebSocketManager.connect()
+                    MainScope().launch {
+                        val instanceId = CacheContext.activeInstanceId.value.trim()
+                        if (instanceId.isNotEmpty()) {
+                            scheduleOutboxProcessing(instanceId)
+                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                                OutgoingMessageCoordinator.drainOutboxForInstance(instanceId)
+                            }
+                        }
+                    }
                 }
                 Lifecycle.Event.ON_STOP -> AppForeground.setForeground(false)
                 else -> {}

@@ -16,6 +16,10 @@ import ru.fromchat.api.TypingUpdateData
 import ru.fromchat.api.WebSocketMessage
 import ru.fromchat.api.WebSocketUpdatesData
 import ru.fromchat.api.db.MessageCacheStore
+import ru.fromchat.api.db.MessageRepository
+import ru.fromchat.api.db.conversationIdForGroup
+import ru.fromchat.api.db.GENERAL_PUBLIC_GROUP_ID
+import ru.fromchat.api.outbox.OutgoingMessageCoordinator
 import ru.fromchat.core.Logger
 
 class PublicChatPanel(
@@ -142,7 +146,15 @@ class PublicChatPanel(
     }
 
     override suspend fun sendMessage(content: String, replyToId: Int?, clientMessageId: String?) {
-        ApiClient.sendMessage(content, replyToId, clientMessageId)
+        val cid = clientMessageId?.trim().orEmpty()
+        if (cid.isEmpty()) return
+        val optimistic = _state.messages.find { it.client_message_id == cid } ?: return
+        OutgoingMessageCoordinator.enqueuePublicMessage(
+            content = content,
+            replyToId = replyToId,
+            clientMessageId = cid,
+            optimisticMessage = optimistic,
+        )
     }
 
     override suspend fun persistOptimisticMessage(message: Message) {
@@ -307,7 +319,7 @@ class PublicChatPanel(
                 DecryptedImageCache.invalidateForMessage(deletedData.message_id)
                 removeMessage(deletedData.message_id)
                 withContext(Dispatchers.Default) {
-                    MessageCacheStore.markMessageDeleted("public", deletedData.message_id)
+                    MessageRepository.markPublicMessageDeleted(deletedData.message_id)
                     MessageCacheStore.replacePublicMessages(_state.messages)
                 }
             }
@@ -387,4 +399,6 @@ class PublicChatPanel(
     override fun showCallButton(): Boolean = false
 
     override fun getTypingHandler(): TypingHandler = typingHandler
+
+    override fun outboxConversationId(): String = conversationIdForGroup(GENERAL_PUBLIC_GROUP_ID)
 }

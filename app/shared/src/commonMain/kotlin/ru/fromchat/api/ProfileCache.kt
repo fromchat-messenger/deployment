@@ -1,14 +1,12 @@
 package ru.fromchat.api
 
-import com.pr0gramm3r101.utils.settings.settings
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import kotlinx.serialization.builtins.ListSerializer
-import kotlinx.serialization.json.Json
+import ru.fromchat.api.db.ProfileCacheStore
 import kotlin.concurrent.Volatile
 
 /**
@@ -29,20 +27,15 @@ fun UserProfile.visibleDisplayName(currentUserId: Int? = null): String? =
     displayName?.trim()?.ifEmpty { null } ?: visibleUsername(currentUserId)
 
 /**
- * In-memory profile cache with disk persistence. [get] reads a volatile snapshot (lock-free).
- * [put] copy-on-writes the map and schedules an async flush of the full list to settings.
+ * In-memory profile cache for the active [ru.fromchat.core.cache.CacheContext] instance,
+ * backed by SQLDelight [profile_cache] per instance partition.
  */
 object ProfileCache {
-    private const val SETTINGS_KEY = "profile_cache_profiles_v1"
-
-    private val json = Json {
-        ignoreUnknownKeys = true
-        isLenient = true
-        encodeDefaults = true
-    }
-
     @Volatile
     private var profiles: Map<Int, UserProfile> = emptyMap()
+
+    @Volatile
+    private var loadedInstanceId: String = ""
 
     private val persistMutex = Mutex()
     private val ioScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
@@ -60,24 +53,26 @@ object ProfileCache {
         }
         val cur = profiles
         profiles = cur + (profile.id to profile)
-        schedulePersist()
+        val instanceId = loadedInstanceId
+        if (instanceId.isNotEmpty()) {
+            ioScope.launch {
+                runCatching { ProfileCacheStore.put(instanceId, profile) }
+            }
+        }
     }
 
-    /**
-     * Removes one user from the cache and persists. Does not clear full API profiles unless
-     * the caller only invokes this for preview cleanup flows.
-     */
     fun remove(userId: Int) {
         val cur = profiles
         if (userId !in cur) return
         profiles = cur - userId
-        schedulePersist()
+        val instanceId = loadedInstanceId
+        if (instanceId.isNotEmpty()) {
+            ioScope.launch {
+                runCatching { ProfileCacheStore.remove(instanceId, userId) }
+            }
+        }
     }
 
-    /**
-     * Drops [isClientPreviewOnly] entries that have no usable identity (blank username and
-     * display name). Avoids persisting or showing stale rows from failed loads / bad merges.
-     */
     fun evictUnusableClientPreview(userId: Int) {
         val p = get(userId) ?: return
         if (!p.isClientPreviewOnly) return
@@ -86,11 +81,6 @@ object ProfileCache {
         if (!hasIdentity) remove(userId)
     }
 
-    /**
-     * Seeds or refreshes a lightweight profile from a DM conversations list [User].
-     * Skips when a full `/user/...` profile is already cached.
-     * Does not write a preview when the API user has no non-blank username (avoids caching empty identity).
-     */
     fun mergeFromDmUser(user: User) {
         val existing = get(user.id)
         if (existing != null && !existing.isClientPreviewOnly) return
@@ -116,8 +106,8 @@ object ProfileCache {
                 suspended = existing?.suspended,
                 suspensionReason = existing?.suspensionReason,
                 deleted = existing?.deleted,
-                isClientPreviewOnly = true
-            )
+                isClientPreviewOnly = true,
+            ),
         )
     }
 
@@ -145,42 +135,38 @@ object ProfileCache {
                 suspended = existing?.suspended,
                 suspensionReason = existing?.suspensionReason,
                 deleted = existing?.deleted,
-                isClientPreviewOnly = true
-            )
+                isClientPreviewOnly = true,
+            ),
         )
     }
 
-    /**
-     * Load stored profiles into memory (merged: existing runtime entries win on id clash).
-     * Call after [ApiClient.loadPersistedData].
-     */
+    fun onActiveInstanceChanged(instanceId: String) {
+        ioScope.launch {
+            persistMutex.withLock {
+                loadedInstanceId = instanceId
+                profiles = if (instanceId.isNotEmpty()) {
+                    runCatching { ProfileCacheStore.loadAllForInstance(instanceId) }.getOrDefault(emptyMap())
+                } else {
+                    emptyMap()
+                }
+                pruneUnusableClientPreviewsLocked()
+            }
+        }
+    }
+
     suspend fun hydrateFromDisk() {
+        val instanceId = ru.fromchat.core.cache.CacheContext.activeInstanceId.value.trim()
         persistMutex.withLock {
-            val raw = settings.getString(SETTINGS_KEY, "").ifBlank { return }
-            runCatching {
-                val list = json.decodeFromString(ListSerializer(UserProfile.serializer()), raw)
-                val usable = list.filter { p ->
-                    when {
-                        !p.isClientPreviewOnly -> true
-                        else ->
-                            p.username.trim().isNotEmpty() ||
-                                !p.displayName.isNullOrBlank()
-                    }
-                }
-                val fromDisk = usable.associateBy { it.id }
-                profiles = fromDisk + profiles
-                if (usable.size < list.size) {
-                    schedulePersist()
-                }
+            loadedInstanceId = instanceId
+            profiles = if (instanceId.isNotEmpty()) {
+                runCatching { ProfileCacheStore.loadAllForInstance(instanceId) }.getOrDefault(emptyMap())
+            } else {
+                emptyMap()
             }
             pruneUnusableClientPreviewsLocked()
         }
     }
 
-    /**
-     * Drops in-memory preview-only rows with no identity (e.g. bad runtime state after a failed merge).
-     * Call only while holding [persistMutex] or from [hydrateFromDisk] inside the lock.
-     */
     private fun pruneUnusableClientPreviewsLocked() {
         val snap = profiles
         val toRemove = snap.filter { (_, p) ->
@@ -194,26 +180,12 @@ object ProfileCache {
             cur = cur - id
         }
         profiles = cur
-        schedulePersist()
     }
 
     suspend fun clear() {
         persistMutex.withLock {
             profiles = emptyMap()
-            settings.putString(SETTINGS_KEY, "")
-        }
-    }
-
-    private fun schedulePersist() {
-        ioScope.launch {
-            persistMutex.withLock {
-                val snap = profiles
-                val blob = json.encodeToString(
-                    ListSerializer(UserProfile.serializer()),
-                    snap.values.toList()
-                )
-                settings.putString(SETTINGS_KEY, blob)
-            }
+            loadedInstanceId = ""
         }
     }
 }

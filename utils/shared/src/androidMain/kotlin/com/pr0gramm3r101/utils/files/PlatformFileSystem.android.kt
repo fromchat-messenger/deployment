@@ -7,7 +7,9 @@ internal actual fun expectExists(path: String): Boolean =
     File(path).exists()
 
 internal actual fun expectWriteBytes(path: String, bytes: ByteArray) {
-    File(path).writeBytes(bytes)
+    val file = File(path)
+    file.parentFile?.mkdirs()
+    file.writeBytes(bytes)
 }
 
 internal actual fun expectDelete(path: String) {

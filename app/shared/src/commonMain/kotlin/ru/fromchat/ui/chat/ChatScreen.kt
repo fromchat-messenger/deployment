@@ -34,6 +34,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -48,16 +49,24 @@ import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import dev.chrisbanes.haze.materials.HazeMaterials
 import dev.chrisbanes.haze.rememberHazeState
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.jetbrains.compose.resources.stringResource
 import ru.fromchat.Res
 import ru.fromchat.api.ApiClient
-import ru.fromchat.api.AttachmentUploadJob
-import ru.fromchat.api.AttachmentUploadQueue
+import ru.fromchat.api.AttachmentUploadNotifier
+import ru.fromchat.api.AttachmentUploadProgress
+import ru.fromchat.api.generateClientMessageId
+import ru.fromchat.api.nowMessageTimestampIso
+import ru.fromchat.api.optimisticMessageIdForClientMessageId
+import ru.fromchat.api.outbox.OutgoingMessageCoordinator
+import com.pr0gramm3r101.utils.supportClipboardManagerImpl
 import ru.fromchat.api.ConnectionStateStore
 import ru.fromchat.api.ConnectionStatus
 import ru.fromchat.api.Message
@@ -220,7 +229,26 @@ fun ChatScreen(
     var expandedImage by remember { mutableStateOf<Pair<Message, Int>?>(null) }
     var isImageClosing by remember { mutableStateOf(false) }
     val imageThumbBounds = remember { mutableStateMapOf<String, Rect>() }
-    val expandedImageKey = expandedImage?.let { (msg, idx) -> "img_${msg.id}_$idx" }
+    val expandedImageKey = expandedImage?.let { (msg, idx) ->
+        val cid = msg.client_message_id?.trim().orEmpty()
+        if (cid.isNotEmpty()) "img_${cid}_$idx" else "img_${msg.id}_$idx"
+    }
+
+    LaunchedEffect(listState, panelState.messages, expandedImage) {
+        try {
+            snapshotFlow {
+                visibleMessageIdsInChatList(
+                    listState = listState,
+                    messages = panelState.messages,
+                    extraMessageId = expandedImage?.first?.id,
+                )
+            }
+                .distinctUntilChanged()
+                .collect { ids -> AttachmentDownloadVisibility.setVisibleMessageIds(ids) }
+        } finally {
+            AttachmentDownloadVisibility.setVisibleMessageIds(emptySet())
+        }
+    }
 
     // Collect WebSocket messages
     LaunchedEffect(Unit) {
@@ -311,11 +339,27 @@ fun ChatScreen(
     var didInitialScroll by rememberSaveable(panelId) { mutableStateOf(false) }
     // LaunchedEffect restarts when returning from profile even if message keys are unchanged; skip auto-scroll unless the list actually changed.
     var previousMessageFingerprint by rememberSaveable(panelId) { mutableStateOf("") }
-    LaunchedEffect(panelState.messages.size, panelState.messages.lastOrNull()?.id, panelState.messages.lastOrNull()?.pendingFileAspectRatio) {
+    var previousMessageCount by rememberSaveable(panelId) { mutableStateOf(-1) }
+    LaunchedEffect(
+        panelState.messages.size,
+        panelState.messages.lastOrNull()?.client_message_id,
+        panelState.messages.lastOrNull()?.uploadProgress,
+        panelState.messages.lastOrNull()?.pendingFileAspectRatio,
+    ) {
         if (panelState.messages.isEmpty()) return@LaunchedEffect
 
+        val newCount = panelState.messages.size
+        if (previousMessageCount >= 0 && newCount < previousMessageCount) {
+            previousMessageCount = newCount
+            val lastMessage = panelState.messages.lastOrNull()
+            previousMessageFingerprint =
+                "${newCount}|${lastMessage?.client_message_id}|${lastMessage?.uploadProgress}|${lastMessage?.pendingFileAspectRatio}"
+            return@LaunchedEffect
+        }
+        previousMessageCount = newCount
+
         val lastMessage = panelState.messages.lastOrNull()
-        val fingerprint = "${panelState.messages.size}|${lastMessage?.id}|${lastMessage?.pendingFileAspectRatio}"
+        val fingerprint = "${newCount}|${lastMessage?.client_message_id}|${lastMessage?.uploadProgress}|${lastMessage?.pendingFileAspectRatio}"
 
         if (!didInitialScroll) {
             didInitialScroll = true
@@ -341,19 +385,50 @@ fun ChatScreen(
         }
     }
 
+    val clipboard = supportClipboardManagerImpl
+
+    LaunchedEffect(contextMenuState.isOpen, contextMenuState.message, panelState.messages, currentUserId, isReadOnly) {
+        if (!contextMenuState.isOpen) return@LaunchedEffect
+        val menuMessage = contextMenuState.message ?: return@LaunchedEffect
+        val cid = menuMessage.client_message_id?.trim().orEmpty()
+        val liveMessage = panelState.messages.find { msg ->
+            if (cid.isNotEmpty()) {
+                msg.client_message_id?.trim() == cid
+            } else {
+                msg.id == menuMessage.id
+            }
+        }
+        if (liveMessage == null) {
+            contextMenuState = contextMenuState.copy(isOpen = false, message = null)
+            return@LaunchedEffect
+        }
+        val menuAuthor = menuMessage.user_id == currentUserId
+        val liveAuthor = liveMessage.user_id == currentUserId
+        val menuFp = messageContextMenuFingerprint(menuMessage, menuAuthor, isReadOnly)
+        val liveFp = messageContextMenuFingerprint(liveMessage, liveAuthor, isReadOnly)
+        if (menuFp != liveFp) {
+            contextMenuState = contextMenuState.copy(isOpen = false, message = null)
+        }
+    }
+
     LaunchedEffect(panel) {
         if (panel.getRecipientId() != null) {
-            AttachmentUploadQueue.progressFlow.collect { progress ->
+            AttachmentUploadNotifier.progressFlow.collect { progress ->
                 when (progress) {
-                    is ru.fromchat.api.AttachmentUploadProgress.InProgress ->
-                        panel.updateMessage(-progress.jobId.hashCode().let { if (it == 0) -1 else it }) {
-                            if (it.uploadJobId == progress.jobId) it.copy(uploadProgress = progress.percent) else it
+                    is AttachmentUploadProgress.InProgress ->
+                        panel.updateMessageByClientMessageId(progress.jobId) {
+                            it.copy(uploadProgress = progress.percent)
                         }
-                    is ru.fromchat.api.AttachmentUploadProgress.Success ->
-                        panel.updateMessage(-progress.jobId.hashCode().let { if (it == 0) -1 else it }) {
-                            if (it.uploadJobId == progress.jobId) it.copy(uploadProgress = null) else it
+                    is AttachmentUploadProgress.Success ->
+                        panel.updateMessageByClientMessageId(progress.jobId) {
+                            it.copy(uploadProgress = null)
                         }
-                    else -> {}
+                    is AttachmentUploadProgress.Failed -> {
+                        if (progress.error != "Cancelled") {
+                            scope.launch { panel.cancelQueuedMessageByClientId(progress.jobId) }
+                        }
+                    }
+                    else -> Unit
                 }
             }
         }
@@ -401,51 +476,75 @@ fun ChatScreen(
                                     if (attachments.isNotEmpty() && recipientId != null) {
                                         val plaintext = text.ifBlank { "" }
                                         attachments.forEach { att ->
-                                            val jobId = "dm_${Clock.System.now().toEpochMilliseconds()}_${att.id}"
-                                            val hc = jobId.hashCode()
-                                            val absHc = if (hc == Int.MIN_VALUE) Int.MAX_VALUE else kotlin.math.abs(hc)
-                                            val tempId = -(absHc.let { if (it == 0) 1 else it })
+                                            val jobId = generateClientMessageId()
+                                            val tempId = optimisticMessageIdForClientMessageId(jobId)
                                             val isImage = att.isImage
-                                            val optimisticMessage = Message(
-                                                id = tempId,
-                                                user_id = currentUserId ?: -1,
-                                                content = plaintext.ifBlank { att.filename },
-                                                timestamp = Clock.System.now().toString(),
-                                                is_read = false,
-                                                is_edited = false,
-                                                username = "You",
-                                                profile_picture = null,
-                                                verified = null,
-                                                reply_to = replyTo,
-                                                client_message_id = jobId,
-                                                reactions = null,
-                                                files = null,
-                                                pendingFileUri = att.uri,
-                                                pendingFilename = att.filename,
-                                                uploadJobId = jobId,
-                                                uploadProgress = 0
-                                            )
-                                            panel.addMessage(optimisticMessage)
-                                            if (isImage) {
-                                                scope.launch {
-                                                    val aspectRatio = getImageAspectRatio(att.uri)
-                                                    if (aspectRatio != null && aspectRatio > 0f) {
-                                                        panel.updateMessage(tempId) {
-                                                            if (it.uploadJobId == jobId) it.copy(pendingFileAspectRatio = aspectRatio) else it
-                                                        }
-                                                    }
+                                            scope.launch(Dispatchers.Default) {
+                                                val imageDimensions = if (isImage) {
+                                                    getImageDimensions(att.uri)
+                                                } else {
+                                                    null
                                                 }
-                                            }
-                                            AttachmentUploadQueue.enqueue(
-                                                AttachmentUploadJob(
-                                                    jobId = jobId,
-                                                    fileUri = att.uri,
-                                                    filename = att.filename,
+                                                val aspectRatio = imageDimensions?.let { (w, h) ->
+                                                    if (h > 0) w.toFloat() / h.toFloat() else null
+                                                }?.takeIf { it > 0f }
+                                                    ?: if (isImage) {
+                                                        getImageAspectRatio(att.uri)?.takeIf { it > 0f }
+                                                    } else {
+                                                        null
+                                                    }
+                                                val staged = if (isImage) {
+                                                    prepareOutboundImageForSend(
+                                                        clientMessageId = jobId,
+                                                        sourceUri = att.uri,
+                                                        optimisticMessageId = tempId,
+                                                        aspectRatio = aspectRatio,
+                                                    )
+                                                } else {
+                                                    null
+                                                }
+                                                val fileUri = staged?.stagedUri ?: att.uri
+                                                val optimisticMessage = Message(
+                                                    id = tempId,
+                                                    user_id = currentUserId ?: -1,
+                                                    content = plaintext.ifBlank { att.filename },
+                                                    timestamp = nowMessageTimestampIso(),
+                                                    is_read = false,
+                                                    is_edited = false,
+                                                    username = "You",
+                                                    profile_picture = null,
+                                                    verified = null,
+                                                    reply_to = replyTo,
+                                                    client_message_id = jobId,
+                                                    reactions = null,
+                                                    files = null,
+                                                    pendingFileUri = fileUri,
+                                                    pendingFilename = att.filename,
+                                                    uploadJobId = jobId,
+                                                    uploadProgress = if (isImage) 0 else null,
+                                                    pendingFileAspectRatio = staged?.aspectRatio ?: aspectRatio,
+                                                    fileDimensions = imageDimensions?.let { listOf(it) },
+                                                )
+                                                withContext(Dispatchers.Main) {
+                                                    panel.addMessage(optimisticMessage)
+                                                }
+                                                if (isImage && staged == null) {
+                                                    withContext(Dispatchers.Main) {
+                                                        panel.cancelQueuedMessageByClientId(jobId)
+                                                    }
+                                                    return@launch
+                                                }
+                                                OutgoingMessageCoordinator.enqueueDmAttachment(
                                                     recipientId = recipientId,
                                                     plaintext = plaintext.ifBlank { att.filename },
-                                                    replyToId = replyToId
+                                                    clientMessageId = jobId,
+                                                    replyToId = replyToId,
+                                                    fileUri = fileUri,
+                                                    filename = att.filename,
+                                                    optimisticMessage = optimisticMessage,
+                                                    aspectRatio = staged?.aspectRatio ?: aspectRatio,
                                                 )
-                                            )
+                                            }
                                         }
                                     } else if (text.isNotBlank()) {
                                         panel.sendMessageWithImmediateDisplay(text, replyToId)
@@ -516,7 +615,8 @@ fun ChatScreen(
                         items(
                             items = panelState.messages.asReversed(),
                             key = { msg ->
-                                msg.client_message_id ?: "id_${msg.id}_${msg.timestamp}"
+                                val cid = msg.client_message_id?.trim().orEmpty()
+                                if (cid.isNotEmpty()) "c:$cid" else "i:${msg.id}:${msg.timestamp}"
                             }
                         ) { message ->
                             var tapPositionInRoot by remember { mutableStateOf(IntOffset(0, 0)) }
@@ -650,13 +750,23 @@ fun ChatScreen(
                                 panel.handleDeleteMessage(message.id)
                             }
                         },
+                        onCopy = { message ->
+                            if (message.isContentCorrupted) return@MessageContextMenu
+                            val text = message.content.trim()
+                            if (text.isNotEmpty()) {
+                                scope.launch { clipboard.setText(text) }
+                            }
+                        },
+                        onCancelSend = { message ->
+                            scope.launch { panel.cancelQueuedMessage(message) }
+                        },
                     )
                 }
             }
         }
 
         expandedImage?.let { (msg, idx) ->
-            val key = "img_${msg.id}_$idx"
+            val key = imageAttachmentKey(msg, idx)
             ImageFullscreenPreview(
                 message = msg,
                 fileIndex = idx,

@@ -19,6 +19,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.Reply
+import androidx.compose.material.icons.rounded.Close
+import androidx.compose.material.icons.rounded.ContentCopy
 import androidx.compose.material.icons.rounded.Delete
 import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material3.Icon
@@ -49,6 +51,7 @@ import androidx.compose.ui.window.PopupProperties
 import org.jetbrains.compose.resources.stringResource
 import ru.fromchat.Res
 import ru.fromchat.api.Message
+import ru.fromchat.api.isQueuedOutbound
 import ru.fromchat.*
 import ru.fromchat.ui.scaleOnPress
 
@@ -57,6 +60,25 @@ data class ContextMenuState(
     val message: Message? = null,
     val position: IntOffset = IntOffset(0, 0)
 )
+
+/** Which context-menu rows would be shown; used to auto-dismiss when actions change. */
+internal fun messageContextMenuFingerprint(
+    message: Message,
+    isAuthor: Boolean,
+    isReadOnly: Boolean,
+): String {
+    val isQueued = message.isQueuedOutbound() && isAuthor
+    val corrupted = message.isContentCorrupted
+    return buildString {
+        append("q=").append(isQueued)
+        append("|copy=").append(!corrupted)
+        if (!isQueued && !isReadOnly) {
+            append("|reply=1")
+            append("|edit=").append(isAuthor && !corrupted)
+            append("|del=").append(isAuthor)
+        }
+    }
+}
 
 @Suppress("AssignedValueIsNeverRead")
 @Composable
@@ -67,6 +89,8 @@ fun MessageContextMenu(
     onReply: (Message) -> Unit,
     onEdit: (Message) -> Unit,
     onDelete: (Message) -> Unit,
+    onCopy: (Message) -> Unit,
+    onCancelSend: (Message) -> Unit,
     isReadOnly: Boolean = false,
     screenWidthPx: Int,
     screenHeightPx: Int,
@@ -126,6 +150,8 @@ fun MessageContextMenu(
                     onReply = {},
                     onEdit = {},
                     onDelete = {},
+                    onCopy = {},
+                    onCancelSend = {},
                     modifier = modifier.graphicsLayer(alpha = 0f),
                     animated = false,
                     withShadow = false,
@@ -212,6 +238,14 @@ fun MessageContextMenu(
                         onDelete(it)
                         onDismiss()
                     },
+                    onCopy = {
+                        onCopy(it)
+                        onDismiss()
+                    },
+                    onCancelSend = {
+                        onCancelSend(it)
+                        onDismiss()
+                    },
                     modifier = modifier,
                     animated = true,
                     scale = scale,
@@ -232,6 +266,8 @@ private fun ContextMenuContent(
     onReply: (Message) -> Unit,
     onEdit: (Message) -> Unit,
     onDelete: (Message) -> Unit,
+    onCopy: (Message) -> Unit,
+    onCancelSend: (Message) -> Unit,
     isReadOnly: Boolean = false,
     modifier: Modifier,
     animated: Boolean,
@@ -276,6 +312,9 @@ private fun ContextMenuContent(
     val labelReply = stringResource(Res.string.action_reply)
     val labelEdit = stringResource(Res.string.action_edit)
     val labelDelete = stringResource(Res.string.action_delete)
+    val labelCopy = stringResource(Res.string.action_copy)
+    val labelCancelSend = stringResource(Res.string.action_cancel_send)
+    val isQueued = message.isQueuedOutbound() && isAuthor
 
     Box(modifier = containerModifier) {
         Box(modifier = Modifier.matchParentSize().background(menuColor, menuShape))
@@ -285,27 +324,41 @@ private fun ContextMenuContent(
                 .verticalScroll(menuScrollState),
             verticalArrangement = Arrangement.spacedBy(itemSpacing)
         ) {
-            if (!isReadOnly) {
+            if (!message.isContentCorrupted) {
+                ContextMenuItem(
+                    icon = Icons.Rounded.ContentCopy,
+                    text = labelCopy,
+                    onClick = { onCopy(message) }
+                )
+            }
+            if (isQueued) {
+                ContextMenuItem(
+                    icon = Icons.Rounded.Close,
+                    text = labelCancelSend,
+                    onClick = { onCancelSend(message) },
+                    isError = true
+                )
+            } else if (!isReadOnly) {
                 ContextMenuItem(
                     icon = Icons.AutoMirrored.Rounded.Reply,
                     text = labelReply,
                     onClick = { onReply(message) }
                 )
-            }
-            if (isAuthor && !isReadOnly) {
-                ContextMenuItem(
-                    icon = Icons.Rounded.Edit,
-                    text = labelEdit,
-                    onClick = { onEdit(message) }
-                )
-            }
-            if (isAuthor && !isReadOnly) {
-                ContextMenuItem(
-                    icon = Icons.Rounded.Delete,
-                    text = labelDelete,
-                    onClick = { onDelete(message) },
-                    isError = true
-                )
+                if (isAuthor && !message.isContentCorrupted) {
+                    ContextMenuItem(
+                        icon = Icons.Rounded.Edit,
+                        text = labelEdit,
+                        onClick = { onEdit(message) }
+                    )
+                }
+                if (isAuthor) {
+                    ContextMenuItem(
+                        icon = Icons.Rounded.Delete,
+                        text = labelDelete,
+                        onClick = { onDelete(message) },
+                        isError = true
+                    )
+                }
             }
         }
     }
@@ -339,7 +392,11 @@ private fun ContextMenuItem(
             .scaleOnPress(
                 scale = 0.96f,
                 onClick = onClick,
-                indication = LocalIndication.current
+                indication = LocalIndication.current,
+                animationSpec = spring(
+                    dampingRatio = Spring.DampingRatioMediumBouncy,
+                    stiffness = Spring.StiffnessMedium,
+                ),
             )
             .padding(horizontal = 12.dp, vertical = 8.dp),
         contentAlignment = Alignment.CenterStart

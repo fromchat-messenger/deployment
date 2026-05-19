@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.IO
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import ru.fromchat.api.DeviceSessionInfo
@@ -106,45 +107,57 @@ object Settings {
         throw IllegalStateException("Server config not initialized")
 
     var serverConfig: ServerConfigData
-        get() = runBlocking {
-            migrateLegacyServerUrlIfNeeded()
-            if (!settings.contains(SERVER_IP_KEY)) {
-                settings.putString(SERVER_IP_KEY, "fromchat.ru")
-                settings.putInt(API_PORT_KEY, 443)
-                settings.putInt(CALLS_PORT_KEY, DEFAULT_CALLS_PORT)
-                if (!settings.contains(HTTPS_ENABLED_KEY)) {
-                    settings.putBoolean(HTTPS_ENABLED_KEY, true)
-                }
-            }
-            val ip = settings.getString(SERVER_IP_KEY)
-            if (ip.isBlank()) {
-                serverConfigNotInitialized()
-            }
-            val apiPort = settings.getInt(API_PORT_KEY, 443).coerceIn(1, 65535)
-            val rawCalls = settings.getInt(CALLS_PORT_KEY, -1)
-            val callsPort = if (rawCalls in 1..65535) rawCalls else DEFAULT_CALLS_PORT
-            val https = settings.getBoolean(HTTPS_ENABLED_KEY, true)
-            val callsEnabled =
-                if (settings.contains(CALLS_ENABLED_KEY)) {
-                    settings.getBoolean(CALLS_ENABLED_KEY, true)
-                } else {
-                    true
-                }
-            ServerConfigData(
-                serverIp = ip,
-                apiPort = apiPort,
-                callsPort = callsPort,
-                httpsEnabled = https,
-                callsEnabled = callsEnabled,
-            )
+        get() = runBlocking { readServerConfig() }
+        set(value) {
+            runIO { writeServerConfig(value) }
         }
-        set(value) = runIO {
-            settings.putString(SERVER_IP_KEY, value.serverIp.trim())
-            settings.putInt(API_PORT_KEY, value.apiPort.coerceIn(1, 65535))
-            settings.putInt(CALLS_PORT_KEY, value.callsPort.coerceIn(1, 65535))
-            settings.putBoolean(HTTPS_ENABLED_KEY, value.httpsEnabled)
-            settings.putBoolean(CALLS_ENABLED_KEY, value.callsEnabled)
+
+    suspend fun setServerConfig(value: ServerConfigData) {
+        withContext(Dispatchers.IO) {
+            writeServerConfig(value)
         }
+    }
+
+    suspend fun readServerConfig(): ServerConfigData {
+        migrateLegacyServerUrlIfNeeded()
+        if (!settings.contains(SERVER_IP_KEY)) {
+            settings.putString(SERVER_IP_KEY, "fromchat.ru")
+            settings.putInt(API_PORT_KEY, 443)
+            settings.putInt(CALLS_PORT_KEY, DEFAULT_CALLS_PORT)
+            if (!settings.contains(HTTPS_ENABLED_KEY)) {
+                settings.putBoolean(HTTPS_ENABLED_KEY, true)
+            }
+        }
+        val ip = settings.getString(SERVER_IP_KEY)
+        if (ip.isBlank()) {
+            serverConfigNotInitialized()
+        }
+        val apiPort = settings.getInt(API_PORT_KEY, 443).coerceIn(1, 65535)
+        val rawCalls = settings.getInt(CALLS_PORT_KEY, -1)
+        val callsPort = if (rawCalls in 1..65535) rawCalls else DEFAULT_CALLS_PORT
+        val https = settings.getBoolean(HTTPS_ENABLED_KEY, true)
+        val callsEnabled =
+            if (settings.contains(CALLS_ENABLED_KEY)) {
+                settings.getBoolean(CALLS_ENABLED_KEY, true)
+            } else {
+                true
+            }
+        return ServerConfigData(
+            serverIp = ip,
+            apiPort = apiPort,
+            callsPort = callsPort,
+            httpsEnabled = https,
+            callsEnabled = callsEnabled,
+        )
+    }
+
+    private suspend fun writeServerConfig(value: ServerConfigData) {
+        settings.putString(SERVER_IP_KEY, value.serverIp.trim())
+        settings.putInt(API_PORT_KEY, value.apiPort.coerceIn(1, 65535))
+        settings.putInt(CALLS_PORT_KEY, value.callsPort.coerceIn(1, 65535))
+        settings.putBoolean(HTTPS_ENABLED_KEY, value.httpsEnabled)
+        settings.putBoolean(CALLS_ENABLED_KEY, value.callsEnabled)
+    }
 
     /** Cached device sessions (JSON). Shown immediately while refreshing from the network. */
     fun readDeviceSessionsCache(): List<DeviceSessionInfo>? = runBlocking {

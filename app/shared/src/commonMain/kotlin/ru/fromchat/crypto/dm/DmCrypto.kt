@@ -28,4 +28,7 @@ expect object DmCrypto {
      * @return Decrypted plaintext
      */
     suspend fun decryptEnvelope(ivB64: String, ciphertextB64: String, mek: ByteArray): ByteArray
+
+    /** AES-GCM decrypt downloaded file bytes (ciphertext + tag; IV from [ivB64]). */
+    suspend fun decryptAesGcm(ivB64: String, ciphertext: ByteArray, mek: ByteArray): ByteArray
 }

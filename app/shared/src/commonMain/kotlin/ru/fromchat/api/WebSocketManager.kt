@@ -2,6 +2,7 @@ package ru.fromchat.api
 
 import io.ktor.client.plugins.websocket.DefaultClientWebSocketSession
 import io.ktor.client.plugins.websocket.webSocket
+import io.ktor.client.request.header
 import io.ktor.client.request.url
 import io.ktor.http.HttpMethod
 import io.ktor.websocket.Frame
@@ -26,7 +27,9 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import ru.fromchat.AppForeground
 import ru.fromchat.core.Logger
+import ru.fromchat.core.cache.CacheContext
 import ru.fromchat.core.config.Config
+import ru.fromchat.core.instance.InstanceIdGuard
 import kotlin.concurrent.Volatile
 import kotlin.coroutines.coroutineContext
 import kotlin.coroutines.suspendCoroutine
@@ -146,10 +149,14 @@ object WebSocketManager {
                     connecting = true
                     ConnectionStateStore.onConnecting()
 
+                    val instanceId = CacheContext.activeInstanceId.value.trim()
                     ApiClient.http.webSocket(
                         method = HttpMethod.Get,
                         request = {
                             url(wsUrl)
+                            if (instanceId.isNotEmpty()) {
+                                header(InstanceIdGuard.INSTANCE_ID_HEADER, instanceId)
+                            }
                         }
                     ) {
                         reconnectDelayMs = MIN_RECONNECT_DELAY_MS

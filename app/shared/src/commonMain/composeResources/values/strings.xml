@@ -75,6 +75,9 @@
     <string name="notif_call_channel_name">Ongoing call</string>
     <string name="notif_call_ongoing_title">Video call</string>
     <string name="notif_call_ongoing_text">Camera and microphone stay active while you’re away</string>
+    <string name="notif_media_upload_channel_name">Media upload</string>
+    <string name="notif_media_upload_title">Sending attachment</string>
+    <string name="notif_media_upload_text">Upload continues in the background</string>
 
     <!-- Messages -->
     <string name="message_sender_you">You</string>
@@ -83,13 +86,19 @@
     <string name="message_edited_suffix">(edited)</string>
     <string name="message_replying_to">Reply to %1$s</string>
     <string name="message_corrupted_short">Can’t show this message</string>
+    <string name="attachment_image_load_failed">Failed to load</string>
+    <string name="attachment_retry">Retry</string>
+    <string name="cd_attachment_retry">Retry loading image</string>
     <string name="message_editing_title">Edit message</string>
 
     <!-- Message actions -->
     <string name="action_reply">Reply</string>
     <string name="action_edit">Edit</string>
     <string name="action_delete">Delete</string>
+    <string name="action_copy">Copy</string>
+    <string name="action_cancel_send">Cancel</string>
     <string name="action_save">Save</string>
+    <string name="notif_media_upload_progress">%1$d%% · %2$s</string>
 
     <!-- Chat input -->
     <string name="cd_close">Close</string>
@@ -179,6 +188,17 @@
     <string name="server_config_action_reset">Reset</string>
     <string name="server_config_action_reset_confirm_title">Reset to defaults?</string>
     <string name="server_config_action_reset_confirm_body">This restores the default server and port settings.</string>
+    <string name="server_config_unsupported_no_instance_id">This server does not provide a valid instance ID. Cannot connect.</string>
+    <string name="server_config_snackbar_timeout">Server did not respond in time. Try again.</string>
+    <string name="server_config_checking">Checking…</string>
+    <string name="server_config_session_logged_out_no_instance">Session ended: server instance ID could not be resolved.</string>
+
+    <!-- Local offline data wipe (Settings → Server tools) -->
+    <string name="action_wipe_local_cache_title">Clear local data</string>
+    <string name="action_wipe_local_cache_supporting">Removes cached messages, media, and pending sends on this device. Your account on the server is not affected.</string>
+    <string name="action_wipe_local_cache_confirm_title">Clear local data?</string>
+    <string name="action_wipe_local_cache_confirm_body">All offline messages and downloads for every server instance on this device will be deleted. Unsent messages in the outbox will be lost.</string>
+    <string name="action_wipe_local_cache_done">Local data cleared</string>
     <string name="save_continue">Save and continue</string>
 
     <!-- Settings -->

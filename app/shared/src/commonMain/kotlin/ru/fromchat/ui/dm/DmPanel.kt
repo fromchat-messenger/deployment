@@ -6,6 +6,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
@@ -15,10 +16,19 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import ru.fromchat.api.ApiClient
 import ru.fromchat.api.DmEnvelope
+import ru.fromchat.api.DmDeletedData
 import ru.fromchat.api.Message
+import ru.fromchat.api.sortMessagesForChatDisplay
 import ru.fromchat.api.ProfileCache
 import ru.fromchat.api.WebSocketMessage
 import ru.fromchat.api.db.MessageCacheStore
+import ru.fromchat.api.AttachmentDownloadNotifier
+import ru.fromchat.api.AttachmentDownloadProgress
+import ru.fromchat.api.db.parseDmMessageContent
+import ru.fromchat.api.db.resolveLocalPreviewUri
+import ru.fromchat.api.db.MessageRepository
+import ru.fromchat.api.db.conversationIdForDm
+import ru.fromchat.api.outbox.OutgoingMessageCoordinator
 import ru.fromchat.api.visibleDisplayName
 import ru.fromchat.core.Logger
 import ru.fromchat.core.config.Config
@@ -30,6 +40,11 @@ import ru.fromchat.ui.chat.ChatPanel
 import ru.fromchat.ui.chat.DecryptedImageCache
 import ru.fromchat.ui.chat.DmTypingHandler
 import ru.fromchat.ui.chat.TypingHandler
+import ru.fromchat.ui.chat.dedupeMessagesByClientId
+import ru.fromchat.ui.chat.dropSupersededOptimisticMessages
+import ru.fromchat.ui.chat.imageAspectRatioForMessage
+import ru.fromchat.ui.chat.AttachmentMediaLog
+import ru.fromchat.ui.chat.isImageFilename
 
 class DmPanel(
     private val otherUserId: Int,
@@ -75,6 +90,22 @@ class DmPanel(
             }
         }
         coroutineScope.launch(Dispatchers.Default) {
+            AttachmentDownloadNotifier.progressFlow.collect { event ->
+                if (event !is AttachmentDownloadProgress.Success || event.messageId <= 0) return@collect
+                val uri = DecryptedImageCache.getUriForStorageKey(event.storageKey) ?: return@collect
+                withContext(Dispatchers.Main) {
+                    updateMessage(event.messageId) { msg ->
+                        msg.copy(pendingFileUri = uri)
+                    }
+                }
+                MessageCacheStore.patchDmMessageLocalPreview(
+                    otherUserId = otherUserId,
+                    messageId = event.messageId,
+                    localPreviewUri = uri,
+                )
+            }
+        }
+        coroutineScope.launch(Dispatchers.Default) {
             runCatching {
                 ApiClient.getProfileById(otherUserId)
             }.onSuccess { profile ->
@@ -109,11 +140,15 @@ class DmPanel(
     }
 
     override suspend fun sendMessage(content: String, replyToId: Int?, clientMessageId: String?) {
-        ApiClient.sendDm(
+        val cid = clientMessageId?.trim().orEmpty()
+        if (cid.isEmpty()) return
+        val optimistic = _state.messages.find { it.client_message_id == cid } ?: return
+        OutgoingMessageCoordinator.enqueueDmMessage(
             recipientId = otherUserId,
             plaintext = content,
-            clientMessageId = clientMessageId,
-            replyToId = replyToId
+            clientMessageId = cid,
+            replyToId = replyToId,
+            optimisticMessage = optimistic,
         )
     }
 
@@ -128,11 +163,15 @@ class DmPanel(
 
     override suspend fun onOptimisticMessageConfirmed(clientMessageId: String, confirmed: Message) {
         MessageCacheStore.confirmDmMessage(otherUserId, clientMessageId, confirmed)
+        OutgoingMessageCoordinator.clearAttachmentOutboxAfterAck(clientMessageId)
     }
 
     override suspend fun loadMessages() {
         setLoading(true)
         try {
+            OutgoingMessageCoordinator.pruneStaleAttachmentOutboxForInstance(
+                ru.fromchat.core.cache.CacheContext.requireActiveInstanceId(),
+            )
             val cached = runCatching { MessageCacheStore.loadDmMessages(otherUserId) }.getOrDefault(emptyList())
             if (cached.isNotEmpty()) {
                 clearMessages()
@@ -142,6 +181,7 @@ class DmPanel(
             val historyResult = runCatching { ApiClient.getDmHistory(otherUserId) }
             if (historyResult.isSuccess) {
                 val response = historyResult.getOrNull() ?: return
+                val optimisticSnapshot = snapshotPendingOptimisticMessages()
                 clearMessages()
                 val decryptedForLog = mutableListOf<Pair<Int, String>>()
                 val messages = response.messages.map { envelope ->
@@ -160,10 +200,18 @@ class DmPanel(
                     } else msg
                 }
                 addMessages(messagesWithReplies)
+                restorePendingOptimisticMessages(optimisticSnapshot)
+                updateState { state ->
+                    val cleaned = dedupeMessagesByClientId(
+                        dropSupersededOptimisticMessages(state.messages, currentUserId),
+                    )
+                    if (cleaned == state.messages) state else state.copy(messages = cleaned)
+                }
                 setHasMoreMessages(false)
 
                 // Persist the most recent DM messages for offline use.
-                MessageCacheStore.replaceDmMessages(otherUserId, messagesWithReplies)
+                val mergedForCache = _state.messages
+                MessageCacheStore.replaceDmMessages(otherUserId, mergedForCache)
             } else {
                 val error = historyResult.exceptionOrNull()
                 Logger.e("DmPanel", "Failed to load DM history: ${error?.message}", error)
@@ -186,6 +234,7 @@ class DmPanel(
         when (message.type) {
             "dmNew" -> message.data?.let { processEnvelope(it) }
             "dmEdited" -> message.data?.let { processEditedEnvelope(it) }
+            "dmDeleted" -> message.data?.let { processDeletedEnvelope(it) }
             "dmTyping" -> message.data?.let { data ->
                 val obj = data.jsonObject
                 val userId = obj["userId"]?.jsonPrimitive?.content?.toIntOrNull()
@@ -205,6 +254,7 @@ class DmPanel(
                     when (type) {
                         "dmNew" -> obj["data"]?.let { processEnvelope(it) }
                         "dmEdited" -> obj["data"]?.let { processEditedEnvelope(it) }
+                        "dmDeleted" -> obj["data"]?.let { processDeletedEnvelope(it) }
                         "dmTyping" -> obj["data"]?.let { data ->
                             val dataObj = data.jsonObject
                             val userId = dataObj["userId"]?.jsonPrimitive?.content?.toIntOrNull()
@@ -230,10 +280,26 @@ class DmPanel(
         if (envelope.senderId != otherUserId && envelope.recipientId != otherUserId) return
         scope.launch(Dispatchers.Default) {
             dmEnvelopeMutex.withLock {
-                val alreadyExists = _state.messages.any { it.id == envelope.id }
+                val cid = envelope.clientMessageId?.trim().orEmpty()
                 val outcome = decryptDmEnvelopeForUi(envelope)
 
-                if (alreadyExists) return@withLock
+                if (envelope.senderId == currentUserId && cid.isNotEmpty()) {
+                    val hasOptimistic = _state.messages.any { message ->
+                        message.user_id == currentUserId &&
+                            (message.client_message_id == cid || message.uploadJobId == cid)
+                    }
+                    if (hasOptimistic) {
+                        mergeConfirmedOwnMessage(envelope, outcome.plaintext, outcome.isCorrupted)
+                        if (envelope.replyToId != null) {
+                            val replyTo = _state.messages.find { it.id == envelope.replyToId }
+                            updateMessage(envelope.id) { it.copy(reply_to = replyTo) }
+                        }
+                        MessageCacheStore.replaceDmMessages(otherUserId, _state.messages)
+                        return@withLock
+                    }
+                }
+
+                if (_state.messages.any { it.id == envelope.id }) return@withLock
 
                 if (envelope.senderId == currentUserId) {
                     mergeConfirmedOwnMessage(envelope, outcome.plaintext, outcome.isCorrupted)
@@ -245,7 +311,6 @@ class DmPanel(
                     updateMessage(envelope.id) { it.copy(reply_to = replyTo) }
                 }
 
-                // Persist updated DM thread to cache
                 MessageCacheStore.replaceDmMessages(otherUserId, _state.messages)
             }
         }
@@ -254,65 +319,95 @@ class DmPanel(
     private fun mergeConfirmedOwnMessage(envelope: DmEnvelope, plaintext: String, isContentCorrupted: Boolean) {
         val confirmed = createMessage(envelope, plaintext, isContentCorrupted)
         val hasAttachments = !envelope.files.isNullOrEmpty()
+        val cid = envelope.clientMessageId?.trim().orEmpty()
+        val stateSourceBeforeMerge = _state.messages.firstOrNull { message ->
+            message.user_id == currentUserId &&
+                cid.isNotEmpty() &&
+                (message.client_message_id == cid || message.uploadJobId == cid)
+        }
+        val localUri = stateSourceBeforeMerge?.pendingFileUri
+        val dmFile = envelope.files?.firstOrNull()
+        val isImageAttachment = dmFile?.let { isImageFilename(it.name) } == true
+        val aspect = imageAspectRatioForMessage(
+            fileAspectRatios = confirmed.fileAspectRatios,
+            fileDimensions = confirmed.fileDimensions ?: stateSourceBeforeMerge?.fileDimensions,
+            pendingFileAspectRatio = stateSourceBeforeMerge?.pendingFileAspectRatio,
+            fileIndex = 0,
+            confirmed = true,
+        )
 
-        updateState { currentState ->
-            val existingRealIndex = currentState.messages.indexOfFirst { it.id == envelope.id }
-            val byClientIdIndex = currentState.messages.indexOfFirst { message ->
-                message.id < 0 &&
-                    message.user_id == currentUserId &&
-                    envelope.clientMessageId != null &&
-                    (message.client_message_id == envelope.clientMessageId || message.uploadJobId == envelope.clientMessageId)
+        scope.launch(Dispatchers.Default) {
+            if (isImageAttachment && localUri != null && dmFile != null) {
+                DecryptedImageCache.seedFromLocalFile(
+                    messageId = envelope.id,
+                    fileIndex = 0,
+                    localFileUri = localUri,
+                    clientMessageId = cid,
+                )
+                DecryptedImageCache.ensureDiskAliasForMessageId(
+                    messageId = envelope.id,
+                    fileIndex = 0,
+                    clientMessageId = cid,
+                )
             }
-            val exactOptimisticIndex = currentState.messages.indexOfFirst { message ->
-                message.user_id == currentUserId &&
-                    message.pendingFileUri != null &&
-                    envelope.clientMessageId != null &&
-                    (message.client_message_id == envelope.clientMessageId || message.uploadJobId == envelope.clientMessageId)
-            }
-            val optimisticIndex = when {
-                byClientIdIndex >= 0 -> byClientIdIndex
-                exactOptimisticIndex >= 0 -> exactOptimisticIndex
-                else -> currentState.messages.indexOfFirst { message ->
-                    message.id < 0 &&
-                        message.user_id == currentUserId &&
-                        (message.pendingFileUri != null) == hasAttachments
-                }
-            }
-
-            val stateSource = when {
-                optimisticIndex >= 0 -> currentState.messages[optimisticIndex]
-                existingRealIndex >= 0 -> currentState.messages[existingRealIndex]
-                else -> null
-            }
-
-            val merged = confirmed.copy(
-                uploadJobId = stateSource?.uploadJobId,
-                pendingFileUri = stateSource?.pendingFileUri,
-                pendingFilename = stateSource?.pendingFilename,
-                pendingFileAspectRatio = stateSource?.pendingFileAspectRatio,
-                uploadProgress = stateSource?.uploadProgress
+            val localPreviewUri = resolveLocalPreviewUri(
+                confirmed.copy(
+                    client_message_id = cid.ifEmpty { confirmed.client_message_id },
+                    pendingFileUri = localUri ?: confirmed.pendingFileUri,
+                ),
             )
 
-            val newMessages = when {
-                optimisticIndex >= 0 -> {
-                    currentState.messages.mapIndexedNotNull { index, message ->
-                        when {
-                            index == optimisticIndex -> merged
-                            message.id == envelope.id -> null
-                            else -> message
+            val merged = confirmed.copy(
+                uploadJobId = null,
+                uploadProgress = null,
+                pendingFileUri = if (isImageAttachment) localPreviewUri ?: localUri else null,
+                pendingFilename = null,
+                pendingFileAspectRatio = aspect,
+                fileAspectRatios = confirmed.fileAspectRatios ?: aspect?.let { listOf(it) },
+                fileDimensions = confirmed.fileDimensions ?: stateSourceBeforeMerge?.fileDimensions,
+            )
+            val mergedForPersistence = merged.copy(pendingFilename = null)
+            AttachmentMediaLog.persist(
+                "merge_confirmed",
+                "msgId" to envelope.id,
+                "clientId" to cid,
+                "localPreview" to (merged.pendingFileUri?.take(64) ?: "null"),
+                "aspect" to aspect,
+            )
+
+            withContext(Dispatchers.Main) {
+                updateState { currentState ->
+                    val optimisticIndex = currentState.messages.indexOfFirst { message ->
+                        message.user_id == currentUserId &&
+                            cid.isNotEmpty() &&
+                            (message.client_message_id == cid || message.uploadJobId == cid)
+                    }
+                    val existingRealIndex = currentState.messages.indexOfFirst { it.id == envelope.id }
+                    val newMessages = when {
+                        optimisticIndex >= 0 -> {
+                            currentState.messages.mapIndexedNotNull { index, message ->
+                                when {
+                                    index == optimisticIndex -> merged
+                                    message.id == envelope.id -> null
+                                    else -> message
+                                }
+                            }
                         }
+                        existingRealIndex >= 0 -> {
+                            currentState.messages.mapIndexed { index, message ->
+                                if (index == existingRealIndex) merged else message
+                            }
+                        }
+                        else -> currentState.messages + merged
                     }
+                    currentState.copy(messages = dedupeMessagesByClientId(newMessages))
                 }
-
-                existingRealIndex >= 0 -> {
-                    currentState.messages.mapIndexed { index, message ->
-                        if (index == existingRealIndex) merged else message
-                    }
-                }
-
-                else -> currentState.messages + merged
             }
-            currentState.copy(messages = newMessages)
+
+            if (cid.isNotEmpty()) {
+                MessageCacheStore.confirmDmMessage(otherUserId, cid, mergedForPersistence)
+                OutgoingMessageCoordinator.clearAttachmentOutboxAfterAck(cid)
+            }
         }
     }
 
@@ -322,15 +417,22 @@ class DmPanel(
         }.getOrNull() ?: return
         if (envelope.senderId != otherUserId && envelope.recipientId != otherUserId) return
         scope.launch(Dispatchers.Default) {
-            DecryptedImageCache.invalidateForMessage(envelope.id)
+            val previous = _state.messages.find { it.id == envelope.id }
+            val filesChanged = previous?.files != envelope.files
+            if (filesChanged) {
+                DecryptedImageCache.invalidateForMessage(envelope.id)
+                envelope.clientMessageId?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                    DecryptedImageCache.invalidateForClientMessage(it)
+                }
+            }
             val outcome = decryptDmEnvelopeForUi(envelope)
-            val dec = parseDecryptedContent(outcome.plaintext)
+            val dec = parseDmMessageContent(outcome.plaintext)
             updateMessage(envelope.id) {
                 it.copy(
                     content = dec.text,
                     is_edited = true,
-                    fileThumbnails = dec.thumbnails ?: it.fileThumbnails,
-                    fileAspectRatios = dec.aspectRatios ?: it.fileAspectRatios,
+                    fileThumbnails = dec.fileThumbnails ?: it.fileThumbnails,
+                    fileAspectRatios = dec.fileAspectRatios ?: it.fileAspectRatios,
                     fileSizes = dec.fileSizes ?: it.fileSizes,
                     fileDimensions = dec.fileDimensions ?: it.fileDimensions,
                     isContentCorrupted = outcome.isCorrupted
@@ -342,43 +444,8 @@ class DmPanel(
         }
     }
 
-    private data class DecryptedContent(
-        val text: String,
-        val thumbnails: List<String>?,
-        val aspectRatios: List<Float>?,
-        val fileSizes: List<Long>?,
-        val fileDimensions: List<Pair<Int, Int>>?
-    )
-
-    private fun parseDecryptedContent(plaintext: String): DecryptedContent {
-        return runCatching {
-            val obj = json.parseToJsonElement(plaintext).jsonObject
-            val text = obj["text"]?.jsonPrimitive?.content ?: return@runCatching DecryptedContent(plaintext, null, null, null, null)
-            val thumbArr = obj["fileThumbnails"]?.jsonArray ?: return@runCatching DecryptedContent(text, null, null, null, null)
-            val thumbnails = thumbArr.map { it.jsonPrimitive.content }
-            val arArr = obj["fileAspectRatios"]?.jsonArray
-            val parsed = arArr?.mapNotNull { elem ->
-                val a = elem as? JsonArray ?: return@mapNotNull null
-                if (a.size == 2) {
-                    val w = (a.getOrNull(0) as? JsonPrimitive)?.content?.toIntOrNull()
-                    val h = (a.getOrNull(1) as? JsonPrimitive)?.content?.toIntOrNull()
-                    if (w != null && h != null && h > 0) Triple(w, h, w.toFloat() / h) else null
-                } else null
-            }?.takeIf { it.size == thumbnails.size }
-            val aspectRatios = parsed?.map { it.third }
-            val fileDimensions = parsed?.map { it.first to it.second }
-            val sizesArr = obj["fileSizes"]?.jsonArray
-            val fileSizes = sizesArr?.mapNotNull { (it as? JsonPrimitive)?.content?.toLongOrNull() }?.takeIf { it.size == thumbnails.size }
-            Logger.d("DmPanel", "parseDecryptedContent: thumbnails=${thumbnails.size}, aspectRatios=${aspectRatios?.size}, fileSizes=${fileSizes?.size}")
-            DecryptedContent(text, thumbnails.ifEmpty { null }, aspectRatios, fileSizes, fileDimensions)
-        }.getOrElse {
-            Logger.d("DmPanel", "parseDecryptedContent: parse failed, using plaintext fallback")
-            DecryptedContent(plaintext, null, null, null, null)
-        }
-    }
-
     private fun createMessage(envelope: DmEnvelope, plaintext: String, isContentCorrupted: Boolean): Message {
-        val dec = parseDecryptedContent(plaintext)
+        val dec = parseDmMessageContent(plaintext)
         val username = if (envelope.senderId == currentUserId) {
             "You"
         } else {
@@ -399,8 +466,8 @@ class DmPanel(
             reactions = null,
             files = envelope.files,
             dmEnvelope = envelope,
-            fileThumbnails = dec.thumbnails,
-            fileAspectRatios = dec.aspectRatios,
+            fileThumbnails = dec.fileThumbnails,
+            fileAspectRatios = dec.fileAspectRatios,
             fileSizes = dec.fileSizes,
             fileDimensions = dec.fileDimensions,
             isContentCorrupted = isContentCorrupted
@@ -417,7 +484,43 @@ class DmPanel(
         }
     }
 
-    override suspend fun handleDeleteMessage(messageId: Int) {}
+    override suspend fun handleDeleteMessage(messageId: Int) {
+        if (messageId < 0) {
+            val queued = _state.messages.find { it.id == messageId } ?: return
+            cancelQueuedMessage(queued)
+            return
+        }
+        val clientId = _state.messages.find { it.id == messageId }?.client_message_id
+        deleteMessageImmediately(messageId)
+        DecryptedImageCache.invalidateForMessage(messageId)
+        clientId?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            DecryptedImageCache.invalidateForClientMessage(it)
+        }
+        runCatching { ApiClient.deleteDm(messageId, otherUserId) }
+        withContext(Dispatchers.Default) {
+            MessageRepository.deleteDmMessageById(otherUserId, messageId)
+        }
+    }
+
+    private fun processDeletedEnvelope(element: JsonElement) {
+        val data = runCatching {
+            json.decodeFromJsonElement(DmDeletedData.serializer(), element)
+        }.getOrNull() ?: return
+        val involvesPeer =
+            data.senderId == otherUserId ||
+                data.recipientId == otherUserId ||
+                data.senderId == currentUserId
+        if (!involvesPeer) return
+        scope.launch(Dispatchers.Default) {
+            val clientId = _state.messages.find { it.id == data.id }?.client_message_id
+            DecryptedImageCache.invalidateForMessage(data.id)
+            clientId?.trim()?.takeIf { it.isNotEmpty() }?.let {
+                DecryptedImageCache.invalidateForClientMessage(it)
+            }
+            deleteMessageImmediately(data.id)
+            MessageRepository.deleteDmMessageById(otherUserId, data.id)
+        }
+    }
 
     override fun showCallButton(): Boolean = Config.callsEnabled
 
@@ -427,4 +530,6 @@ class DmPanel(
 
     override val showUsernamesInMessages: Boolean
         get() = false
+
+    override fun outboxConversationId(): String = conversationIdForDm(otherUserId)
 }

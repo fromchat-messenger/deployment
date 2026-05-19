@@ -398,6 +398,19 @@ data class WebSocketDeleteMessageRequest(
 )
 
 @Serializable
+data class WebSocketDeleteDmRequest(
+    val id: Int,
+    @SerialName("recipientId") val recipientId: Int,
+)
+
+@Serializable
+data class DmDeletedData(
+    val id: Int,
+    @SerialName("senderId") val senderId: Int,
+    @SerialName("recipientId") val recipientId: Int? = null,
+)
+
+@Serializable
 data class DmTypingData(
     @SerialName("recipientId") val recipientId: Int
 )

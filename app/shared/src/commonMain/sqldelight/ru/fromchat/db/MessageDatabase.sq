@@ -1,15 +1,30 @@
+CREATE TABLE server_binding (
+    configKey TEXT NOT NULL PRIMARY KEY,
+    activeInstanceId TEXT NOT NULL,
+    updatedAt TEXT
+);
+
+CREATE TABLE instance_registry (
+    instanceId TEXT NOT NULL PRIMARY KEY,
+    firstSeenAt TEXT NOT NULL,
+    lastSeenAt TEXT NOT NULL
+);
+
 CREATE TABLE conversation (
-    id TEXT NOT NULL PRIMARY KEY,
-    type TEXT NOT NULL, -- "public" or "dm"
+    instanceId TEXT NOT NULL,
+    id TEXT NOT NULL,
+    type TEXT NOT NULL,
     otherUserId INTEGER,
     displayName TEXT,
     lastMessageId INTEGER,
     lastMessagePreview TEXT,
     unreadCount INTEGER NOT NULL DEFAULT 0,
-    updatedAt TEXT
+    updatedAt TEXT,
+    PRIMARY KEY (instanceId, id)
 );
 
 CREATE TABLE message (
+    instanceId TEXT NOT NULL,
     id INTEGER NOT NULL,
     conversationId TEXT NOT NULL,
     userId INTEGER NOT NULL,
@@ -20,55 +35,120 @@ CREATE TABLE message (
     replyToId INTEGER,
     clientMessageId TEXT,
     deletedFlag INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (id, conversationId)
+    sendStatus TEXT,
+    PRIMARY KEY (instanceId, conversationId, id)
 );
 
-CREATE INDEX message_conversation_index ON message(conversationId, timestamp);
+CREATE INDEX message_instance_conversation_index ON message(instanceId, conversationId, timestamp);
 
 CREATE TABLE attachment (
+    instanceId TEXT NOT NULL,
     id INTEGER NOT NULL,
     messageId INTEGER NOT NULL,
     conversationId TEXT NOT NULL,
     remotePath TEXT,
     localPath TEXT,
-    status TEXT NOT NULL, -- "PENDING", "DOWNLOADING", "READY"
+    status TEXT NOT NULL,
     blurhash TEXT,
     aspectRatio REAL,
     size INTEGER,
-    PRIMARY KEY (id, messageId, conversationId)
+    bytesTransferred INTEGER NOT NULL DEFAULT 0,
+    clientMessageId TEXT,
+    PRIMARY KEY (instanceId, id, messageId, conversationId)
 );
 
+CREATE TABLE outbox (
+    instanceId TEXT NOT NULL,
+    clientMessageId TEXT NOT NULL,
+    conversationId TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    payloadJson TEXT NOT NULL,
+    retryCount INTEGER NOT NULL DEFAULT 0,
+    nextAttemptAt TEXT,
+    bytesUploaded INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (instanceId, clientMessageId)
+);
+
+CREATE TABLE profile_cache (
+    instanceId TEXT NOT NULL,
+    userId INTEGER NOT NULL,
+    json TEXT NOT NULL,
+    PRIMARY KEY (instanceId, userId)
+);
+
+-- server_binding
+selectActiveInstanceIdForConfig:
+SELECT activeInstanceId FROM server_binding WHERE configKey = ?;
+
+upsertServerBinding:
+INSERT OR REPLACE INTO server_binding(configKey, activeInstanceId, updatedAt)
+VALUES (?, ?, ?);
+
+deleteServerBinding:
+DELETE FROM server_binding WHERE configKey = ?;
+
+-- instance_registry
+upsertInstanceRegistry:
+INSERT OR REPLACE INTO instance_registry(instanceId, firstSeenAt, lastSeenAt)
+VALUES (?, ?, ?);
+
+touchInstanceRegistry:
+UPDATE instance_registry SET lastSeenAt = ? WHERE instanceId = ?;
+
+selectAllInstanceIds:
+SELECT instanceId FROM instance_registry;
+
+-- messages
 selectMessagesByConversation:
 SELECT *
 FROM message
-WHERE conversationId = ? AND deletedFlag = 0
+WHERE instanceId = ? AND conversationId = ? AND deletedFlag = 0
 ORDER BY timestamp ASC;
 
--- Last N rows for a conversation (newest first in SQL; reverse in Kotlin for chronological UI).
 selectRecentMessagesByConversation:
 SELECT *
 FROM message
-WHERE conversationId = ? AND deletedFlag = 0
+WHERE instanceId = ? AND conversationId = ? AND deletedFlag = 0
 ORDER BY timestamp DESC
 LIMIT :limit;
 
--- Optimistic rows only (avoid scanning the full conversation on replace).
 selectPendingMessagesByConversation:
 SELECT *
 FROM message
-WHERE conversationId = ? AND deletedFlag = 0 AND id < 0
+WHERE instanceId = ? AND conversationId = ? AND deletedFlag = 0 AND id < 0
 ORDER BY timestamp ASC;
+
+selectSentMessageIdByClientMessageId:
+SELECT id
+FROM message
+WHERE instanceId = ? AND conversationId = ? AND clientMessageId = ? AND id > 0 AND deletedFlag = 0
+LIMIT 1;
+
+selectMessageById:
+SELECT *
+FROM message
+WHERE instanceId = ? AND conversationId = ? AND id = ? AND deletedFlag = 0
+LIMIT 1;
 
 deleteMessagesForConversation:
 DELETE FROM message
-WHERE conversationId = ?;
+WHERE instanceId = ? AND conversationId = ?;
 
 deleteMessageByClientMessageId:
 DELETE FROM message
-WHERE conversationId = ? AND clientMessageId = ?;
+WHERE instanceId = ? AND conversationId = ? AND clientMessageId = ?;
+
+deletePendingMessageByClientMessageId:
+DELETE FROM message
+WHERE instanceId = ? AND conversationId = ? AND clientMessageId = ? AND id < 0;
+
+deleteMessageById:
+DELETE FROM message
+WHERE instanceId = ? AND conversationId = ? AND id = ?;
 
 upsertMessage:
 INSERT OR REPLACE INTO message(
+    instanceId,
     id,
     conversationId,
     userId,
@@ -78,21 +158,49 @@ INSERT OR REPLACE INTO message(
     isEdited,
     replyToId,
     clientMessageId,
-    deletedFlag
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+    deletedFlag,
+    sendStatus
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 markMessageDeleted:
 UPDATE message
 SET deletedFlag = 1
-WHERE id = ? AND conversationId = ?;
+WHERE instanceId = ? AND id = ? AND conversationId = ?;
 
-selectConversations:
+deleteAllMessagesForInstance:
+DELETE FROM message WHERE instanceId = ?;
+
+deleteAllConversationsForInstance:
+DELETE FROM conversation WHERE instanceId = ?;
+
+deleteAllOutboxForInstance:
+DELETE FROM outbox WHERE instanceId = ?;
+
+deleteAllAttachmentsForInstance:
+DELETE FROM attachment WHERE instanceId = ?;
+
+deleteAllProfilesForInstance:
+DELETE FROM profile_cache WHERE instanceId = ?;
+
+purgeAllCache:
+DELETE FROM message;
+DELETE FROM conversation;
+DELETE FROM outbox;
+DELETE FROM attachment;
+DELETE FROM profile_cache;
+DELETE FROM server_binding;
+DELETE FROM instance_registry;
+
+-- conversations
+selectConversationsForInstance:
 SELECT *
 FROM conversation
+WHERE instanceId = ?
 ORDER BY updatedAt DESC;
 
 upsertConversation:
 INSERT OR REPLACE INTO conversation(
+    instanceId,
     id,
     type,
     otherUserId,
@@ -101,5 +209,43 @@ INSERT OR REPLACE INTO conversation(
     lastMessagePreview,
     unreadCount,
     updatedAt
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- outbox
+selectPendingOutboxForInstance:
+SELECT * FROM outbox WHERE instanceId = ? ORDER BY clientMessageId ASC;
+
+upsertOutbox:
+INSERT OR REPLACE INTO outbox(
+    instanceId,
+    clientMessageId,
+    conversationId,
+    kind,
+    payloadJson,
+    retryCount,
+    nextAttemptAt,
+    bytesUploaded
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
 
+deleteOutboxItem:
+DELETE FROM outbox WHERE instanceId = ? AND clientMessageId = ?;
+
+selectOutboxItem:
+SELECT * FROM outbox WHERE instanceId = ? AND clientMessageId = ? LIMIT 1;
+
+-- profile
+upsertProfileCache:
+INSERT OR REPLACE INTO profile_cache(instanceId, userId, json)
+VALUES (?, ?, ?);
+
+selectProfileCache:
+SELECT json FROM profile_cache WHERE instanceId = ? AND userId = ?;
+
+selectAllProfilesForInstance:
+SELECT userId, json FROM profile_cache WHERE instanceId = ?;
+
+deleteProfileCache:
+DELETE FROM profile_cache WHERE instanceId = ? AND userId = ?;
+
+deleteAllProfileCache:
+DELETE FROM profile_cache;

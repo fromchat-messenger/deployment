@@ -40,7 +40,7 @@ actual object DmCrypto {
     actual suspend fun decryptEnvelope(
         ivB64: String,
         ciphertextB64: String,
-        mek: ByteArray
+        mek: ByteArray,
     ) = withContext(Dispatchers.Default) {
         val key = mek.require("MEK must be 32 bytes") {
             it.size == AES_KEY_SIZE
@@ -55,6 +55,29 @@ actual object DmCrypto {
             .require("Ciphertext too short") {
                 it.size >= GCM_TAG_SIZE
             }
+        try {
+            aesGcmDecrypt(key, iv, ciphertext)
+        } catch (e: Throwable) {
+            throw DmCiphertextCorruptedException(cause = e)
+        }
+    }
+
+    actual suspend fun decryptAesGcm(
+        ivB64: String,
+        ciphertext: ByteArray,
+        mek: ByteArray,
+    ) = withContext(Dispatchers.Default) {
+        val key = mek.require("MEK must be 32 bytes") {
+            it.size == AES_KEY_SIZE
+        }
+        val iv = Base64
+            .decode(ivB64)
+            .require("IV must be 12 bytes") {
+                it.size == GCM_IV_SIZE
+            }
+        ciphertext.require("Ciphertext too short") {
+            it.size >= GCM_TAG_SIZE
+        }
         try {
             aesGcmDecrypt(key, iv, ciphertext)
         } catch (e: Throwable) {

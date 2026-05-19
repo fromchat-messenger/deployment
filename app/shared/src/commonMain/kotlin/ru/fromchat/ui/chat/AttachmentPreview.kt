@@ -42,19 +42,31 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.material3.TextButton
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
@@ -64,11 +76,18 @@ import com.pr0gramm3r101.utils.crypto.Base64
 import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import dev.chrisbanes.haze.materials.HazeMaterials
+import org.jetbrains.compose.resources.stringResource
+import ru.fromchat.Res
+import ru.fromchat.api.ApiClient
+import ru.fromchat.api.AttachmentDownloadNotifier
 import ru.fromchat.api.DmEnvelope
 import ru.fromchat.api.DmFile
+import ru.fromchat.attachment_image_load_failed
+import ru.fromchat.attachment_retry
+import ru.fromchat.cd_attachment_retry
 
 private val IMAGE_SIZE = 160.dp
-private val IMAGE_RADIUS = 12.dp
+private const val BLUR_FADE_MS = 450
 
 internal fun isImageFilename(name: String): Boolean =
     name.endsWith(".png", true) || name.endsWith(".jpg", true) ||
@@ -84,6 +103,8 @@ fun AttachmentPreview(
     /** Filename for pending (non-image) files; used when pendingFileUri is set. */
     pendingFilename: String? = null,
     isUploading: Boolean,
+    /** Waiting for server ack after upload finished (keep blur, no progress ring). */
+    awaitingServerAck: Boolean = false,
     /** 0–100 upload progress when isUploading; null = indefinite */
     uploadProgress: Int? = null,
     fileThumbnail: String? = null,
@@ -91,11 +112,14 @@ fun AttachmentPreview(
     fileSizeBytes: Long? = null,
     messageId: Int? = null,
     fileIndex: Int? = null,
+    clientMessageId: String? = null,
     onFileClick: (() -> Unit)? = null,
     onImageClick: (() -> Unit)? = null,
     onImageBounds: ((Rect) -> Unit)? = null,
     isExpanded: Boolean = false,
     isAuthor: Boolean = false,
+    /** Message text shown in attachment download/upload logs. */
+    messageLabel: String? = null,
     modifier: Modifier = Modifier
 ) {
     val isImage = when {
@@ -108,8 +132,9 @@ fun AttachmentPreview(
         else -> false
     }
 
-    val isImageWithThumb = file != null && isImage && dmEnvelope != null && !fileThumbnail.isNullOrBlank()
-    val isPendingImage = pendingFileUri != null && isImage
+    val isPendingImage = pendingFileUri != null && isImage && file == null && dmEnvelope == null
+    val isConfirmedImage = file != null && isImage && dmEnvelope != null && !isPendingImage
+    val showImageTile = isPendingImage || isConfirmedImage
     val isPendingFile = pendingFileUri != null && !isImage
 
     when {
@@ -124,20 +149,29 @@ fun AttachmentPreview(
                 sizeBytes = fileSizeBytes,
                 onClick = if (file != null) onFileClick else null,
                 isAuthor = isAuthor,
-                isUploading = isPendingFile && isUploading,
+                isUploading = isPendingFile && (isUploading || awaitingServerAck),
                 uploadProgress = if (isPendingFile) uploadProgress else null,
                 modifier = modifier
             )
         }
-        isImageWithThumb || isPendingImage -> {
+        showImageTile -> {
             var isFullyLoaded by remember(messageId, fileIndex, file?.path, pendingFileUri) {
                 mutableStateOf(false)
             }
             Box(
                 modifier = modifier
                     .then(
-                        if (onImageClick != null && isFullyLoaded && !isExpanded && (isImageWithThumb || !isPendingImage)) Modifier.clickable(indication = null, interactionSource = remember { MutableInteractionSource() }, onClick = onImageClick)
-                        else Modifier
+                        if (onImageClick != null && !isExpanded &&
+                            (isPendingImage || isFullyLoaded || pendingFileUri != null)
+                        ) {
+                            Modifier.clickable(
+                                indication = null,
+                                interactionSource = remember { MutableInteractionSource() },
+                                onClick = onImageClick,
+                            )
+                        } else {
+                            Modifier
+                        }
                     )
                     .conditional(
                         fileAspectRatio != null && fileAspectRatio > 0f,
@@ -150,9 +184,9 @@ fun AttachmentPreview(
                             Modifier.size(IMAGE_SIZE)
                         }
                     )
-                    .clip(RoundedCornerShape(IMAGE_RADIUS))
+                    .clip(attachmentImageCornerShape(isAuthor))
                     .then(
-                        if (onImageBounds != null && (isImageWithThumb || !isPendingImage)) {
+                        if (onImageBounds != null && showImageTile) {
                             Modifier.onGloballyPositioned { coords ->
                                 val pos = coords.positionInRoot()
                                 val size = coords.size
@@ -176,27 +210,26 @@ fun AttachmentPreview(
                         .fillMaxSize()
                         .graphicsLayer { alpha = if (isExpanded) 0f else 1f }
                 ) {
-                    when {
-                        isPendingImage -> UnifiedImageContent(
-                            localUri = pendingFileUri,
-                            messageId = messageId,
-                            fileIndex = fileIndex,
-                            file = file,
-                            envelope = dmEnvelope,
-                            currentUserId = currentUserId,
-                            isUploading = isUploading,
-                            uploadProgress = uploadProgress,
-                            onFullyLoaded = { if (it) isFullyLoaded = true }
-                        )
-                        else -> DecryptedImageContent(
+                    val imageStableKey = clientMessageId?.trim()?.takeIf { it.isNotEmpty() }
+                        ?: "img:${messageId ?: 0}:${fileIndex ?: 0}"
+                    key(imageStableKey) {
+                        ChatImageTileContent(
                             messageId = messageId ?: -1,
                             fileIndex = fileIndex ?: 0,
-                            file = file!!,
-                            envelope = dmEnvelope!!,
-                            currentUserId = currentUserId,
-                            thumbnailBase64 = fileThumbnail!!,
+                            clientMessageId = clientMessageId,
+                            localUri = pendingFileUri,
+                            serverFile = file,
+                            envelope = dmEnvelope,
+                            thumbnailBase64 = fileThumbnail,
                             aspectRatio = fileAspectRatio,
-                            onFullyLoaded = { if (it) isFullyLoaded = true }
+                            currentUserId = currentUserId,
+                            isAuthor = isAuthor,
+                            isOutboundPending = isPendingImage,
+                            isUploading = isUploading,
+                            awaitingServerAck = awaitingServerAck,
+                            uploadProgress = uploadProgress,
+                            messageLabel = messageLabel,
+                            onFullyLoaded = { if (it) isFullyLoaded = true },
                         )
                     }
                 }
@@ -207,103 +240,437 @@ fun AttachmentPreview(
 
 @OptIn(ExperimentalHazeMaterialsApi::class, ExperimentalMaterial3ExpressiveApi::class)
 @Composable
-private fun UnifiedImageContent(
-    localUri: String,
-    messageId: Int?,
-    fileIndex: Int?,
-    file: DmFile?,
+private fun ChatImageTileContent(
+    messageId: Int,
+    fileIndex: Int,
+    clientMessageId: String?,
+    localUri: String?,
+    serverFile: DmFile?,
     envelope: DmEnvelope?,
+    thumbnailBase64: String?,
+    aspectRatio: Float?,
     currentUserId: Int?,
+    isAuthor: Boolean,
+    isOutboundPending: Boolean,
     isUploading: Boolean,
+    awaitingServerAck: Boolean,
     uploadProgress: Int?,
-    onFullyLoaded: (Boolean) -> Unit = {}
+    messageLabel: String? = null,
+    onFullyLoaded: (Boolean) -> Unit = {},
 ) {
-    var cachedPath by remember(messageId, fileIndex, file?.path) {
-        mutableStateOf(
-            if (messageId != null && fileIndex != null && file != null) {
-                DecryptedImageCache.getCached(messageId, fileIndex, file.path)
-            } else {
-                null
-            }
-        )
+    val clipShape = attachmentImageCornerShape(isAuthor)
+    val cacheClientId = clientMessageId?.trim()?.takeIf { it.isNotEmpty() }
+    val layoutAspect = aspectRatio?.takeIf { it.isFinite() && it > 0f }
+    val fallbackDecodeSize = rememberChatPreviewDecodeSize(IMAGE_SIZE, layoutAspect)
+    val seedDecodeSize = remember(layoutAspect) { previewSeedDecodeSize(layoutAspect) }
+    val decryptCacheKey = remember(messageId, fileIndex, cacheClientId) {
+        DecryptedImageCache.storageKey(messageId, fileIndex, cacheClientId)
+    }
+    var tileDecodeSize by remember(decryptCacheKey) { mutableStateOf<ChatPreviewDecodeSize?>(null) }
+    val decodeSize = remember(tileDecodeSize, fallbackDecodeSize, seedDecodeSize) {
+        coalesceDecodeTarget(tileDecodeSize, fallbackDecodeSize, seedDecodeSize)
     }
 
-    LaunchedEffect(messageId, fileIndex, file?.path, envelope) {
-        cachedPath = if (messageId != null && fileIndex != null && file != null && envelope != null) {
-            DecryptedImageCache.getOrDecrypt(messageId, fileIndex, file, envelope, currentUserId)
+    val initialFull = remember(decryptCacheKey) { LocalDecodedImageCache.peekFull(decryptCacheKey) }
+    val hadInstantFull = initialFull != null
+    val hasLocalSource = !localUri.isNullOrBlank()
+    val hasServerThumb = thumbnailBase64?.isNotBlank() == true
+
+    var fullBitmap by remember(decryptCacheKey) {
+        mutableStateOf(initialFull)
+    }
+    var didRevealFull by remember(decryptCacheKey) { mutableStateOf(hadInstantFull) }
+    val thumbBlurAlpha = remember(decryptCacheKey, hasServerThumb, hasLocalSource) {
+        Animatable(
+            when {
+                hadInstantFull -> 0f
+                hasServerThumb || hasLocalSource -> 1f
+                else -> 0f
+            },
+        )
+    }
+    val fullRevealAlpha = remember(decryptCacheKey) {
+        Animatable(if (hadInstantFull) 1f else 0f)
+    }
+    val showOutboundBlurOverlay = isOutboundPending && hasLocalSource
+    val outboundOverlayAlpha = remember(showOutboundBlurOverlay) {
+        Animatable(if (showOutboundBlurOverlay) 1f else 0f)
+    }
+    val downloadProgressByKey by AttachmentDownloadNotifier.progressPercentByKey.collectAsState()
+    val downloadProgress = remember(downloadProgressByKey, messageId, fileIndex, cacheClientId) {
+        DecryptedImageCache.resolveDownloadPercent(
+            messageId = messageId,
+            fileIndex = fileIndex,
+            clientMessageId = cacheClientId,
+            progressByKey = downloadProgressByKey,
+        )
+    }
+    val decryptFailed = remember(downloadProgressByKey, messageId, fileIndex, cacheClientId) {
+        AttachmentDownloadNotifier.isFailed(messageId, fileIndex, cacheClientId)
+    }
+    var isAwaitingNetworkFull by remember(decryptCacheKey) { mutableStateOf(false) }
+    var loadAttempt by remember(decryptCacheKey) { mutableIntStateOf(0) }
+    LaunchedEffect(showOutboundBlurOverlay) {
+        if (showOutboundBlurOverlay) {
+            outboundOverlayAlpha.snapTo(1f)
         } else {
-            null
+            if (fullBitmap != null) {
+                didRevealFull = true
+                fullRevealAlpha.snapTo(1f)
+                thumbBlurAlpha.snapTo(0f)
+            }
+            outboundOverlayAlpha.animateTo(0f, tween(BLUR_FADE_MS, easing = FastOutSlowInEasing))
         }
     }
 
-    val localPainter = rememberAsyncImagePainter(
-        model = localUri,
-        contentScale = ContentScale.Crop
-    )
-    val localState by localPainter.state.collectAsState()
-    LaunchedEffect(localState) {
-        if (localState is coil3.compose.AsyncImagePainter.State.Success) {
+    var cachedPath by remember(decryptCacheKey) {
+        mutableStateOf(DecryptedImageCache.getCached(messageId, fileIndex, cacheClientId))
+    }
+    val thumbnailBytes = remember(thumbnailBase64) {
+        thumbnailBase64?.let { decodeAttachmentThumbnailBase64(it) }
+    }
+    val thumbBitmap by produceState<ImageBitmap?>(
+        initialValue = LocalDecodedImageCache.peekThumb(decryptCacheKey),
+        decryptCacheKey,
+        thumbnailBytes,
+        decodeSize,
+    ) {
+        if (thumbnailBytes == null) {
+            value = null
+            return@produceState
+        }
+        value = LocalDecodedImageCache.peekThumb(decryptCacheKey)
+            ?: withContext(Dispatchers.Default) {
+                LocalDecodedImageCache.loadThumb(decryptCacheKey, thumbnailBytes, decodeSize)
+            }
+    }
+    var decryptFinished by remember(decryptCacheKey) {
+        mutableStateOf(fullBitmap != null)
+    }
+    val imageContentScale = ContentScale.Fit
+    val tilePlaceholderColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.42f)
+
+    LaunchedEffect(
+        decryptCacheKey,
+        localUri,
+        serverFile?.path,
+        messageId,
+        isOutboundPending,
+        cacheClientId,
+        loadAttempt,
+    ) {
+        val target = decodeSize
+        AttachmentMediaLog.tileLoad(
+            "load_start",
+            "key" to decryptCacheKey,
+            "msgId" to messageId,
+            "pending" to isOutboundPending,
+            "localUri" to (localUri?.take(48) ?: "null"),
+            "target" to "${target.widthPx}x${target.heightPx}",
+        )
+        val diskUri = DecryptedImageCache.getCached(messageId, fileIndex, cacheClientId)
+        val localPaths = buildList {
+            localUri?.trim()?.takeIf { it.isNotEmpty() }?.let { add(it) }
+            diskUri?.let { cached -> if (none { it == cached }) add(cached) }
+        }
+        if (localPaths.isNotEmpty()) {
+            val loaded = withContext(Dispatchers.Default) {
+                LocalDecodedImageCache.peekFull(decryptCacheKey)
+                    ?: localPaths.firstNotNullOfOrNull { path ->
+                        LocalDecodedImageCache.loadFull(
+                            decryptCacheKey,
+                            path.removePrefix("file://"),
+                            target,
+                        )
+                    }
+            }
+            if (loaded != null) {
+                AttachmentMediaLog.tileLoad(
+                    "load_local_ok",
+                    "key" to decryptCacheKey,
+                    "source" to "disk_or_pending",
+                    "bmp" to "${loaded.width}x${loaded.height}",
+                )
+                fullBitmap = loaded
+                cachedPath = diskUri ?: localPaths.firstOrNull()
+                decryptFinished = true
+                if (thumbBitmap == null) {
+                    didRevealFull = true
+                    fullRevealAlpha.snapTo(1f)
+                    thumbBlurAlpha.snapTo(0f)
+                }
+            onFullyLoaded(true)
+                return@LaunchedEffect
+            }
+            AttachmentMediaLog.tileLoad(
+                "load_local_miss",
+                "key" to decryptCacheKey,
+                "paths" to localPaths.size,
+            )
+        }
+        if (isOutboundPending) {
+            decryptFinished = localPaths.isEmpty() && thumbBitmap == null && thumbnailBytes == null
+            if (fullBitmap != null || thumbBitmap != null) onFullyLoaded(true)
+            return@LaunchedEffect
+        }
+        val file = serverFile
+        val env = envelope
+        if (file == null || env == null) {
+            decryptFinished = true
+            AttachmentMediaLog.tileLoad("load_skip_no_envelope", "key" to decryptCacheKey)
+            return@LaunchedEffect
+        }
+        if (diskUri != null) {
+            cachedPath = diskUri
+            val loaded = withContext(Dispatchers.Default) {
+                LocalDecodedImageCache.loadFull(decryptCacheKey, diskUri.removePrefix("file://"), target)
+            }
+            if (loaded != null) {
+                AttachmentMediaLog.tileLoad(
+                    "load_disk_decode_ok",
+                    "key" to decryptCacheKey,
+                    "uri" to diskUri,
+                    "bmp" to "${loaded.width}x${loaded.height}",
+                )
+                fullBitmap = loaded
+                decryptFinished = true
+                if (thumbBitmap == null) {
+                    didRevealFull = true
+                    fullRevealAlpha.snapTo(1f)
+                    thumbBlurAlpha.snapTo(0f)
+                }
+                onFullyLoaded(true)
+                return@LaunchedEffect
+            }
+            AttachmentMediaLog.tileLoad(
+                "load_disk_decode_failed",
+                "key" to decryptCacheKey,
+                "uri" to diskUri,
+            )
+        }
+        AttachmentMediaLog.tileLoad(
+            "load_network_decrypt",
+            "key" to decryptCacheKey,
+            "file" to file.path,
+        )
+        isAwaitingNetworkFull = true
+        val uri = try {
+            DecryptedImageCache.getOrDecrypt(
+                messageId = messageId,
+                fileIndex = fileIndex,
+                file = file,
+                envelope = env,
+                currentUserId = currentUserId,
+                clientMessageId = cacheClientId,
+                messageLabel = messageLabel,
+            )
+        } catch (error: Throwable) {
+            AttachmentMediaLog.tileLoad(
+                "load_exception",
+                "key" to decryptCacheKey,
+                "err" to (error.message ?: error::class.simpleName),
+                "msg" to AttachmentMediaLog.messageLabel(messageLabel),
+            )
+            null
+        } finally {
+            isAwaitingNetworkFull = false
+        }
+        cachedPath = uri
+        if (uri != null) {
+            fullBitmap = withContext(Dispatchers.Default) {
+                LocalDecodedImageCache.loadFull(decryptCacheKey, uri.removePrefix("file://"), target)
+            }
+        }
+        decryptFinished = true
+        AttachmentMediaLog.tileLoad(
+            if (fullBitmap != null) "load_done" else "load_failed",
+            "key" to decryptCacheKey,
+            "uri" to uri,
+            "msg" to AttachmentMediaLog.messageLabel(messageLabel),
+        )
+        if (fullBitmap != null) {
+            AttachmentDownloadNotifier.clearProgress(messageId, fileIndex, cacheClientId)
+            if (thumbBitmap == null) {
+                didRevealFull = true
+                fullRevealAlpha.snapTo(1f)
+                thumbBlurAlpha.snapTo(0f)
+            }
             onFullyLoaded(true)
         }
     }
 
+    LaunchedEffect(decryptCacheKey, tileDecodeSize) {
+        val target = tileDecodeSize ?: return@LaunchedEffect
+        val current = fullBitmap ?: return@LaunchedEffect
+        if (!LocalDecodedImageCache.needsUpscale(current, target)) return@LaunchedEffect
+        val path = cachedPath?.removePrefix("file://")
+            ?: localUri?.removePrefix("file://")
+            ?: DecryptedImageCache.getCached(messageId, fileIndex, cacheClientId)?.removePrefix("file://")
+            ?: return@LaunchedEffect
+        AttachmentMediaLog.tileLoad(
+            "upscale_start",
+            "key" to decryptCacheKey,
+            "from" to "${current.width}x${current.height}",
+            "target" to "${target.widthPx}x${target.heightPx}",
+        )
+        val upscaled = withContext(Dispatchers.Default) {
+            LocalDecodedImageCache.loadFull(decryptCacheKey, path, target)
+        }
+        if (upscaled != null) {
+            fullBitmap = upscaled
+            onFullyLoaded(true)
+        }
+    }
+
+    LaunchedEffect(fullBitmap, thumbBitmap, hadInstantFull) {
+        when {
+            fullBitmap == null -> {
+                didRevealFull = false
+                fullRevealAlpha.snapTo(0f)
+                if (thumbBitmap != null) thumbBlurAlpha.snapTo(1f)
+            }
+            didRevealFull -> return@LaunchedEffect
+            hadInstantFull -> {
+                didRevealFull = true
+                fullRevealAlpha.snapTo(1f)
+                thumbBlurAlpha.snapTo(0f)
+            }
+            thumbBitmap != null -> {
+                didRevealFull = true
+                thumbBlurAlpha.snapTo(1f)
+                fullRevealAlpha.snapTo(0f)
+                coroutineScope {
+                    launch {
+                        thumbBlurAlpha.animateTo(0f, tween(BLUR_FADE_MS, easing = FastOutSlowInEasing))
+                    }
+                    launch {
+                        fullRevealAlpha.animateTo(1f, tween(BLUR_FADE_MS, easing = FastOutSlowInEasing))
+                    }
+                }
+            }
+            else -> {
+                didRevealFull = true
+                fullRevealAlpha.snapTo(1f)
+                thumbBlurAlpha.snapTo(0f)
+            }
+        }
+    }
+
+    val isDownloadingFullImage = !isOutboundPending && fullBitmap == null &&
+        (downloadProgress != null || isAwaitingNetworkFull)
+    val showDownloadProgressOverlay = isDownloadingFullImage && !showOutboundBlurOverlay
+    val showLoadFailedOverlay = decryptFailed && fullBitmap == null && !isOutboundPending
+    val showSpinnerOnly = fullBitmap == null && thumbBitmap == null && !hasLocalSource &&
+        !showLoadFailedOverlay &&
+        !showOutboundBlurOverlay &&
+        (isDownloadingFullImage || (!decryptFinished && !isOutboundPending))
+
     Box(
         modifier = Modifier
             .fillMaxSize()
-            .clip(RoundedCornerShape(IMAGE_RADIUS))
-    ) {
-        Image(
-            painter = localPainter,
-            contentDescription = null,
-            modifier = Modifier.fillMaxSize(),
-            contentScale = ContentScale.Crop
-        )
-        AnimatedContent(
-            targetState = isUploading,
-            modifier = Modifier.matchParentSize(),
-            transitionSpec = {
-                (fadeIn(animationSpec = tween(220)) + scaleIn(initialScale = 0.98f, animationSpec = tween(220)))
-                    .togetherWith(
-                        fadeOut(animationSpec = tween(450, easing = FastOutSlowInEasing)) +
-                            scaleOut(targetScale = 1.02f, animationSpec = tween(450, easing = FastOutSlowInEasing))
-                    )
-            },
-            label = "upload_overlay"
-        ) { uploading ->
-            if (uploading) {
-                UploadingImageOverlay(
-                    model = localUri,
-                    uploadProgress = uploadProgress,
-                    modifier = Modifier.matchParentSize()
-                )
-            } else {
-                Box(modifier = Modifier.matchParentSize())
-            }
-        }
-        if (cachedPath != null && file != null) {
-            val fullPainter = rememberAsyncImagePainter(
-                model = cachedPath!!,
-                contentScale = ContentScale.FillWidth
-            )
-            val fullState by fullPainter.state.collectAsState()
-            when (fullState) {
-                is coil3.compose.AsyncImagePainter.State.Success -> {
-                    LaunchedEffect(Unit) { onFullyLoaded(true) }
-                    val alpha = remember { Animatable(0f) }
-                    LaunchedEffect(Unit) {
-                        alpha.animateTo(1f, animationSpec = tween(300))
+            .onGloballyPositioned { coordinates ->
+                val size: IntSize = coordinates.size
+                if (size.width > 0 && size.height > 0) {
+                    val measured = ChatPreviewDecodeSize(size.width, size.height)
+                    if (decodeSizeChangedMeaningfully(tileDecodeSize, measured)) {
+                        tileDecodeSize = measured
                     }
-                    Image(
-                        painter = fullPainter,
-                        contentDescription = file.name,
-                        modifier = Modifier
-                            .fillMaxSize()
-                            .alpha(alpha.value),
-                        contentScale = ContentScale.FillWidth
+                }
+            }
+            .clip(clipShape),
+    ) {
+        when {
+            else -> {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(tilePlaceholderColor),
+                )
+                if (fullBitmap == null && hasLocalSource && !showOutboundBlurOverlay) {
+                    AsyncImage(
+                        model = localUri,
+            contentDescription = null,
+                        contentScale = imageContentScale,
+            modifier = Modifier.fillMaxSize(),
                     )
                 }
-                else -> Unit
+                thumbBitmap?.let { thumb ->
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .then(
+                                if (thumbBlurAlpha.value > 0.01f) {
+                                    Modifier.hazeEffect(style = HazeMaterials.thin())
+                                } else {
+                                    Modifier
+                                },
+                            ),
+                    ) {
+                        CachedAttachmentImage(
+                            bitmap = thumb,
+                            contentDescription = serverFile?.name,
+                            contentScale = imageContentScale,
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .alpha(thumbBlurAlpha.value.coerceIn(0f, 1f)),
+                        )
+                    }
+                }
+                fullBitmap?.let { full ->
+                    CachedAttachmentImage(
+                        bitmap = full,
+                        contentDescription = serverFile?.name,
+                        contentScale = imageContentScale,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .alpha(fullRevealAlpha.value.coerceIn(0f, 1f)),
+                    )
+                    LaunchedEffect(full) { onFullyLoaded(true) }
+                }
+                if (showDownloadProgressOverlay) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.12f)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        ExpressiveUploadIndicator(
+                            uploadProgress = downloadProgress,
+                            modifier = Modifier.size(48.dp),
+                        )
+                    }
+                } else if (showSpinnerOnly) {
+                    Box(
+                        modifier = Modifier.fillMaxSize(),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        IndefiniteCircularProgress(modifier = Modifier.size(28.dp))
+                    }
+                }
+                if (showLoadFailedOverlay) {
+                    AttachmentImageLoadFailedOverlay(
+                        isAuthor = isAuthor,
+                        onRetry = {
+                            AttachmentDownloadNotifier.clearProgress(messageId, fileIndex, cacheClientId)
+                            decryptFinished = false
+                            ApiClient.clearPartialEncryptedDownload(decryptCacheKey)
+                            loadAttempt++
+                        },
+                        modifier = Modifier.matchParentSize(),
+                    )
+                }
             }
+        }
+        if (showOutboundBlurOverlay && outboundOverlayAlpha.value > 0.01f) {
+            UploadingImageOverlay(
+                model = localUri!!,
+                uploadProgress = if (isUploading || awaitingServerAck) uploadProgress else null,
+                clipShape = clipShape,
+                contentScale = imageContentScale,
+                modifier = Modifier
+                    .matchParentSize()
+                    .alpha(outboundOverlayAlpha.value),
+            )
         }
     }
 }
@@ -313,20 +680,22 @@ private fun UnifiedImageContent(
 private fun UploadingImageOverlay(
     model: String,
     uploadProgress: Int?,
-    modifier: Modifier = Modifier
+    clipShape: RoundedCornerShape,
+    contentScale: ContentScale = ContentScale.Fit,
+    modifier: Modifier = Modifier,
 ) {
     Box(modifier = modifier) {
         Box(
             modifier = Modifier
                 .matchParentSize()
-                .clip(RoundedCornerShape(IMAGE_RADIUS))
+                .clip(clipShape)
                 .hazeEffect(style = HazeMaterials.thin())
         ) {
             AsyncImage(
                 model = model,
                 contentDescription = null,
                 modifier = Modifier.fillMaxSize(),
-                contentScale = ContentScale.Crop
+                contentScale = contentScale,
             )
         }
         Box(
@@ -349,11 +718,16 @@ private fun ExpressiveUploadIndicator(
     uploadProgress: Int?,
     modifier: Modifier = Modifier,
     indicatorColor: Color? = null,
-    trackColorOverride: Color? = null
+    trackColorOverride: Color? = null,
 ) {
-    val clampedProgress = uploadProgress?.coerceIn(0, 100)
-    val indeterminate = clampedProgress == null || clampedProgress == 0
-    val waveActive = clampedProgress != null && clampedProgress in 1..99
+    // Latch first percent so we do not swap indeterminate ↔ determinate indicators (that resets animation).
+    var latchedPercent by remember { mutableStateOf<Int?>(null) }
+    if (uploadProgress != null) {
+        latchedPercent = uploadProgress.coerceIn(0, 100)
+    }
+    val clampedProgress = latchedPercent
+    val indeterminate = clampedProgress == null
+    val waveActive = clampedProgress != null && clampedProgress < 100
 
     val waveAnimSpec = tween<Float>(durationMillis = 320, easing = FastOutSlowInEasing)
 
@@ -406,7 +780,7 @@ private fun PendingImageContent(
         Box(
             modifier = Modifier
                 .fillMaxSize()
-                .clip(RoundedCornerShape(IMAGE_RADIUS))
+                .clip(attachmentImageCornerShape(isAuthor = false))
         ) {
             AsyncImage(
                 model = uri,
@@ -430,7 +804,8 @@ private fun PendingImageContent(
                     UploadingImageOverlay(
                         model = uri,
                         uploadProgress = uploadProgress,
-                        modifier = Modifier.matchParentSize()
+                        clipShape = attachmentImageCornerShape(isAuthor = false),
+                        modifier = Modifier.matchParentSize(),
                     )
                 } else {
                     Box(modifier = Modifier.matchParentSize())
@@ -491,153 +866,88 @@ private fun DeterminateCircularProgress(
     )
 }
 
-@OptIn(ExperimentalHazeMaterialsApi::class)
 @Composable
-private fun DecryptedImageContent(
-    messageId: Int,
-    fileIndex: Int,
-    file: DmFile,
-    envelope: DmEnvelope,
-    currentUserId: Int?,
-    thumbnailBase64: String,
-    aspectRatio: Float?,
-    onFullyLoaded: (Boolean) -> Unit = {}
+internal fun CachedAttachmentImage(
+    bitmap: ImageBitmap,
+    contentDescription: String?,
+    contentScale: ContentScale,
+    modifier: Modifier = Modifier.fillMaxSize(),
 ) {
-    var cachedPath by remember(messageId, fileIndex, file.path) {
-        mutableStateOf(DecryptedImageCache.getCached(messageId, fileIndex, file.path))
-    }
-    val thumbnailBytes = remember(thumbnailBase64) {
-        runCatching { Base64.decode(thumbnailBase64) }.getOrNull()
-    }
+    Image(
+        bitmap = bitmap,
+        contentDescription = contentDescription,
+        modifier = modifier,
+        contentScale = contentScale,
+    )
+}
 
-    LaunchedEffect(messageId, fileIndex, file.path, envelope) {
-        cachedPath = DecryptedImageCache.getOrDecrypt(messageId, fileIndex, file, envelope, currentUserId)
-    }
+@Composable
+internal fun FullscreenBitmapImage(
+    bitmap: ImageBitmap,
+    contentDescription: String?,
+    contentScale: ContentScale,
+    modifier: Modifier = Modifier.fillMaxSize(),
+) = CachedAttachmentImage(bitmap, contentDescription, contentScale, modifier)
 
+/** Supports raw base64 and `data:*;base64,` payloads from the server. */
+internal fun decodeAttachmentThumbnailBase64(value: String): ByteArray? {
+    val payload = value.trim().substringAfter("base64,", value).trim()
+    if (payload.isEmpty()) return null
+    return runCatching { Base64.decode(payload) }.getOrNull()
+}
+
+@Composable
+private fun AttachmentImageLoadFailedOverlay(
+    isAuthor: Boolean,
+    onRetry: () -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val failedText = stringResource(Res.string.attachment_image_load_failed)
+    val retryText = stringResource(Res.string.attachment_retry)
+    val retryCd = stringResource(Res.string.cd_attachment_retry)
+    val headlineColor = if (isAuthor) Color.White else MaterialTheme.colorScheme.onSurface
     Box(
-        modifier = Modifier
-            .fillMaxSize()
-            .clip(RoundedCornerShape(IMAGE_RADIUS))
+        modifier = modifier
+            .background(MaterialTheme.colorScheme.scrim.copy(alpha = 0.35f)),
+        contentAlignment = Alignment.Center,
     ) {
-        Box(modifier = Modifier.fillMaxSize()) {
-        when {
-            cachedPath != null -> {
-                val fullPainter = rememberAsyncImagePainter(
-                    model = cachedPath!!,
-                    contentScale = ContentScale.FillWidth
-                )
-                val fullState by fullPainter.state.collectAsState()
-                when (fullState) {
-                    is coil3.compose.AsyncImagePainter.State.Success -> {
-                        LaunchedEffect(Unit) { onFullyLoaded(true) }
-                        Image(
-                            painter = fullPainter,
-                            contentDescription = file.name,
-                            modifier = Modifier.fillMaxSize(),
-                            contentScale = ContentScale.FillWidth
-                        )
-                    }
-                    is coil3.compose.AsyncImagePainter.State.Loading -> {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            IndefiniteCircularProgress(modifier = Modifier.size(32.dp))
-                        }
-                    }
-                    else -> {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            IndefiniteCircularProgress(modifier = Modifier.size(32.dp))
-                        }
-                    }
-                }
-            }
-            thumbnailBytes == null -> {
-                Box(
-                    modifier = Modifier.fillMaxSize(),
-                    contentAlignment = Alignment.Center
-                ) {
-                    IndefiniteCircularProgress(modifier = Modifier.size(32.dp))
-                }
-            }
-            else -> {
-                val thumbPainter = rememberAsyncImagePainter(
-                    model = thumbnailBytes,
-                    contentScale = ContentScale.Crop
-                )
-                val thumbState by thumbPainter.state.collectAsState()
-                when (thumbState) {
-                    is coil3.compose.AsyncImagePainter.State.Loading -> {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            IndefiniteCircularProgress(modifier = Modifier.size(32.dp))
-                        }
-                    }
-                    is coil3.compose.AsyncImagePainter.State.Success -> {
-                        LaunchedEffect(Unit) { onFullyLoaded(true) }
-                        Box(
-                            modifier = Modifier
-                                .fillMaxSize()
-                                .clip(RoundedCornerShape(IMAGE_RADIUS))
-                                .hazeEffect(style = HazeMaterials.thin())
-                        ) {
-                            Image(
-                                painter = thumbPainter,
-                                contentDescription = file.name,
-                                modifier = Modifier.fillMaxSize(),
-                                contentScale = ContentScale.Crop
-                            )
-                        }
-                        if (cachedPath != null) {
-                            val fullPainter = rememberAsyncImagePainter(
-                                model = cachedPath!!,
-                                contentScale = ContentScale.FillWidth
-                            )
-                            val fullState by fullPainter.state.collectAsState()
-                            when (fullState) {
-                                is coil3.compose.AsyncImagePainter.State.Success -> {
-                                    LaunchedEffect(Unit) { onFullyLoaded(true) }
-                                    val alpha = remember { Animatable(0f) }
-                                    LaunchedEffect(Unit) {
-                                        alpha.animateTo(1f, animationSpec = tween(300))
-                                    }
-                                    Image(
-                                        painter = fullPainter,
-                                        contentDescription = file.name,
-                                        modifier = Modifier
-                                            .fillMaxSize()
-                                            .alpha(alpha.value),
-                                        contentScale = ContentScale.FillWidth
-                                    )
-                                }
-                                else -> {
-                                    Box(
-                                        modifier = Modifier.fillMaxSize(),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        IndefiniteCircularProgress(modifier = Modifier.size(32.dp))
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    else -> {
-                        Box(
-                            modifier = Modifier.fillMaxSize(),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            IndefiniteCircularProgress(modifier = Modifier.size(32.dp))
-                        }
-                    }
-                }
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(6.dp),
+            modifier = Modifier.padding(horizontal = 12.dp),
+        ) {
+            Text(
+                text = failedText,
+                style = MaterialTheme.typography.bodySmall,
+                color = headlineColor,
+            )
+            TextButton(
+                onClick = onRetry,
+                modifier = Modifier.semantics { contentDescription = retryCd },
+            ) {
+                Text(text = retryText, color = headlineColor)
             }
         }
-        }
+    }
+}
+
+@Composable
+private fun CorruptedImagePlaceholder(
+    modifier: Modifier = Modifier,
+    clipShape: RoundedCornerShape = attachmentImageCornerShape(isAuthor = false),
+) {
+    Box(
+        modifier = modifier
+            .clip(clipShape)
+            .hazeEffect(style = HazeMaterials.thin()),
+        contentAlignment = Alignment.Center,
+    ) {
+        Icon(
+            imageVector = Icons.Rounded.AttachFile,
+            contentDescription = null,
+            modifier = Modifier.size(32.dp),
+            tint = MaterialTheme.colorScheme.onSurfaceVariant,
+        )
     }
 }
 

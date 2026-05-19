@@ -62,6 +62,7 @@ import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.DeleteSweep
 import androidx.compose.material.icons.filled.Storage
 import androidx.compose.material.icons.filled.TabletAndroid
 import androidx.compose.material.icons.filled.VerifiedUser
@@ -126,7 +127,15 @@ import org.jetbrains.compose.resources.stringResource
 import ru.fromchat.Res
 import ru.fromchat.about
 import ru.fromchat.back
+import ru.fromchat.action_wipe_local_cache_confirm_body
+import ru.fromchat.action_wipe_local_cache_confirm_title
+import ru.fromchat.action_wipe_local_cache_done
+import ru.fromchat.action_wipe_local_cache_supporting
+import ru.fromchat.action_wipe_local_cache_title
 import ru.fromchat.api.ApiClient
+import ru.fromchat.api.db.MessageRepository
+import ru.fromchat.api.db.wipeLocalCacheOnDisk
+import ru.fromchat.core.cache.writeFromChatCacheGeneration
 import ru.fromchat.ui.imeScrollWithKeyboard
 import ru.fromchat.api.DeviceSessionInfo
 import ru.fromchat.ui.main.settings.SettingsSecurityPredictiveBackHandler
@@ -473,8 +482,14 @@ fun SettingsAppearanceScreen(onBack: () -> Unit) {
 @Composable
 fun SettingsServerToolsScreen(onBack: () -> Unit, outerNav: NavController) {
     val scrollBehavior = TopAppBarDefaults.exitUntilCollapsedScrollBehavior(rememberTopAppBarState())
+    val snackbarHostState = remember { SnackbarHostState() }
+    val scope = rememberCoroutineScope()
+    var showWipeLocalCacheConfirm by remember { mutableStateOf(false) }
+    var wipingLocalCache by remember { mutableStateOf(false) }
+    val wipeDoneMessage = stringResource(Res.string.action_wipe_local_cache_done)
 
     Scaffold(
+        snackbarHost = { FromChatSnackbarHost(snackbarHostState) },
         modifier = Modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             MediumTopAppBar(
@@ -511,10 +526,56 @@ fun SettingsServerToolsScreen(onBack: () -> Unit, outerNav: NavController) {
                     headline = stringResource(Res.string.debug_tools),
                     supportingText = stringResource(Res.string.debug_tools_d),
                     onClick = { outerNav.navigate("debug") },
+                    divider = true,
+                    dividerColor = settingsSurfaceCutDividerColor(),
+                    dividerThickness = SettingsSurfaceCutDividerThickness,
                     leadingContent = { SettingsListLeadingIcon(Icons.Filled.BugReport) }
+                )
+                ListItem(
+                    headline = stringResource(Res.string.action_wipe_local_cache_title),
+                    supportingText = stringResource(Res.string.action_wipe_local_cache_supporting),
+                    onClick = { if (!wipingLocalCache) showWipeLocalCacheConfirm = true },
+                    enabled = !wipingLocalCache,
+                    divider = false,
+                    leadingContent = { SettingsListLeadingIcon(Icons.Filled.DeleteSweep) }
                 )
             }
         }
+    }
+
+    if (showWipeLocalCacheConfirm) {
+        AlertDialog(
+            onDismissRequest = { if (!wipingLocalCache) showWipeLocalCacheConfirm = false },
+            title = { Text(stringResource(Res.string.action_wipe_local_cache_confirm_title)) },
+            text = { Text(stringResource(Res.string.action_wipe_local_cache_confirm_body)) },
+            confirmButton = {
+                TextButton(
+                    enabled = !wipingLocalCache,
+                    onClick = {
+                        wipingLocalCache = true
+                        scope.launch {
+                            runCatching {
+                                wipeLocalCacheOnDisk()
+                                writeFromChatCacheGeneration()
+                            }
+                            wipingLocalCache = false
+                            showWipeLocalCacheConfirm = false
+                            snackbarHostState.showSnackbar(wipeDoneMessage)
+                        }
+                    },
+                ) {
+                    Text(stringResource(Res.string.confirm))
+                }
+            },
+            dismissButton = {
+                TextButton(
+                    enabled = !wipingLocalCache,
+                    onClick = { showWipeLocalCacheConfirm = false },
+                ) {
+                    Text(stringResource(Res.string.cancel))
+                }
+            },
+        )
     }
 }
 

@@ -51,14 +51,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.pr0gramm3r101.utils.conditional
-import kotlinx.datetime.TimeZone
-import kotlinx.datetime.toLocalDateTime
 import org.jetbrains.compose.resources.stringResource
 import ru.fromchat.Res
 import ru.fromchat.api.Message
+import ru.fromchat.api.formatMessageTimeLocal
 import ru.fromchat.*
-import kotlin.time.ExperimentalTime
-import kotlin.time.Instant
 
 private fun isMessageCorrupted(message: Message): Boolean {
     val files = message.files ?: return false
@@ -70,7 +67,6 @@ private fun isMessageCorrupted(message: Message): Boolean {
     }
 }
 
-@OptIn(ExperimentalTime::class)
 @Composable
 fun MessageItem(
     message: Message,
@@ -96,7 +92,7 @@ fun MessageItem(
         isMessageCorrupted(message)
     }
     val formattedTime = remember(message.timestamp) {
-        formatTime(message.timestamp)
+        formatMessageTimeLocal(message.timestamp)
     }
     val corruptedBody = stringResource(Res.string.message_corrupted)
     val editedSuffix = stringResource(Res.string.message_edited_suffix)
@@ -419,84 +415,86 @@ fun MessageItem(
                                 modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
                             )
                         } else {
-                            val firstFile = message.files?.firstOrNull()
-                            val firstFileIsImage = firstFile?.let { isImageFilename(it.name) } ?: false
-                            val hasPendingServerImage = message.pendingFileUri != null &&
-                                firstFileIsImage &&
-                                message.dmEnvelope != null
-                            if (message.pendingFileUri != null) {
-                                val isPendingImage = message.pendingFilename?.let { isImageFilename(it) } ?: false
-                                val pendingImageFile = firstFile.takeIf { isPendingImage && hasPendingServerImage }
-                                val imageKey = if (isPendingImage) "img_${message.id}_0" else null
+                            val primaryFile = message.files?.firstOrNull()
+                            val primaryIsImage = primaryFile != null && isImageFilename(primaryFile.name)
+                            val showPrimaryImageSlot = pendingIsImage || primaryIsImage
+                            if (showPrimaryImageSlot) {
+                                val imageKey = imageAttachmentKey(message, 0)
+                                val awaitingServer = message.id < 0 && message.files.isNullOrEmpty()
+                                val isOutboundPendingImage = awaitingServer && pendingIsImage
+                                val awaitingServerAck = isOutboundPendingImage &&
+                                    message.uploadProgress == null
                                 AttachmentPreview(
-                                    file = pendingImageFile,
-                                    dmEnvelope = if (pendingImageFile != null) message.dmEnvelope else null,
-                                    currentUserId = if (pendingImageFile != null) currentUserId else null,
+                                    file = primaryFile,
+                                    dmEnvelope = message.dmEnvelope,
+                                    currentUserId = currentUserId,
                                     pendingFileUri = message.pendingFileUri,
                                     pendingFilename = message.pendingFilename,
-                                    isUploading = message.uploadProgress != null,
+                                    isUploading = isOutboundPendingImage,
+                                    awaitingServerAck = awaitingServerAck,
                                     uploadProgress = message.uploadProgress,
-                                    fileThumbnail = if (pendingImageFile != null) {
-                                        message.fileThumbnails?.firstOrNull()?.takeIf { it.isNotBlank() }
-                                    } else {
-                                        null
-                                    },
-                                    fileAspectRatio = if (pendingImageFile != null) {
-                                        message.fileAspectRatios?.firstOrNull()?.takeIf { it > 0f }
-                                            ?: message.pendingFileAspectRatio
-                                    } else {
-                                        message.pendingFileAspectRatio
-                                    },
-                                    fileSizeBytes = when {
-                                        pendingImageFile != null -> message.fileSizes?.firstOrNull()
-                                        !isPendingImage -> message.fileSizes?.firstOrNull()
-                                        else -> null
-                                    },
-                                    messageId = if (pendingImageFile != null && isPendingImage) message.id else null,
-                                    fileIndex = if (pendingImageFile != null && isPendingImage) 0 else null,
+                                    fileThumbnail = message.fileThumbnails?.firstOrNull()?.takeIf { it.isNotBlank() },
+                                    fileAspectRatio = imageAspectRatioForMessage(
+                                        fileAspectRatios = message.fileAspectRatios,
+                                        fileDimensions = message.fileDimensions,
+                                        pendingFileAspectRatio = message.pendingFileAspectRatio,
+                                        fileIndex = 0,
+                                        confirmed = message.id > 0,
+                                        hasLocalPreview = DecryptedImageCache.isDecryptedImageCacheUri(
+                                            message.pendingFileUri,
+                                        ),
+                                    ),
+                                    fileSizeBytes = message.fileSizes?.firstOrNull(),
+                                    messageId = message.id,
+                                    fileIndex = 0,
+                                    clientMessageId = message.client_message_id,
                                     onFileClick = null,
-                                    onImageClick = if (isPendingImage && imageKey != null) {
-                                        { onImageClick?.invoke(message, 0) }
-                                    } else {
-                                        null
-                                    },
-                                    onImageBounds = if (isPendingImage && imageKey != null && onImageBounds != null) {
+                                    onImageClick = { onImageClick?.invoke(message, 0) },
+                                    onImageBounds = if (onImageBounds != null) {
                                         { rect -> onImageBounds.invoke(imageKey, rect) }
                                     } else {
                                         null
                                     },
-                                    isExpanded = isPendingImage &&
-                                        imageKey != null &&
-                                        expandedImageKey != null &&
+                                    isExpanded = expandedImageKey != null &&
                                         expandedImageKey == imageKey &&
                                         !isImageClosing,
                                     isAuthor = isAuthor,
-                                    modifier = if (isPendingImage && firstContentIsImage) {
+                                    messageLabel = message.content,
+                                    modifier = if (firstContentIsImage) {
                                         Modifier.padding(all = 2.dp)
                                     } else {
-                                        Modifier.padding(
-                                            horizontal = if (isPendingImage) 2.dp else 12.dp,
-                                            vertical = if (isPendingImage) 2.dp else 4.dp
-                                        )
+                                        Modifier.padding(horizontal = 2.dp, vertical = 4.dp)
                                     }
                                 )
                             }
                             message.files?.forEachIndexed { index, file ->
-                                if (message.pendingFileUri != null && index == 0) return@forEachIndexed
+                                if (index == 0 && showPrimaryImageSlot && isImageFilename(file.name)) {
+                                    return@forEachIndexed
+                                }
                                 val isImage = isImageFilename(file.name)
-                                val imageKey = if (isImage) "img_${message.id}_$index" else null
+                                val imageKey = if (isImage) imageAttachmentKey(message, index) else null
                                 val isFirstImage = index == 0 && isImage
                                 AttachmentPreview(
                                     file = file,
                                     dmEnvelope = message.dmEnvelope,
                                     currentUserId = currentUserId,
-                                    pendingFileUri = null,
+                                    pendingFileUri = if (index == 0) message.pendingFileUri else null,
+                                    pendingFilename = if (index == 0) message.pendingFilename else null,
                                     isUploading = false,
                                     fileThumbnail = message.fileThumbnails?.getOrNull(index)?.takeIf { it.isNotBlank() },
-                                    fileAspectRatio = message.fileAspectRatios?.getOrNull(index)?.takeIf { it > 0f },
+                                    fileAspectRatio = imageAspectRatioForMessage(
+                                        fileAspectRatios = message.fileAspectRatios,
+                                        fileDimensions = message.fileDimensions,
+                                        pendingFileAspectRatio = message.pendingFileAspectRatio,
+                                        fileIndex = index,
+                                        confirmed = message.id > 0,
+                                        hasLocalPreview = index == 0 &&
+                                            DecryptedImageCache.isDecryptedImageCacheUri(message.pendingFileUri),
+                                    ),
                                     fileSizeBytes = message.fileSizes?.getOrNull(index),
                                     messageId = if (isImage) message.id else null,
                                     fileIndex = if (isImage) index else null,
+                                    clientMessageId = message.client_message_id,
                                     onFileClick = null,
                                     onImageClick = if (isImage) { { onImageClick?.invoke(message, index) } } else null,
                                     onImageBounds = if (isImage && imageKey != null && onImageBounds != null) {
@@ -504,6 +502,7 @@ fun MessageItem(
                                     } else null,
                                     isExpanded = isImage && expandedImageKey != null && expandedImageKey == imageKey && !isImageClosing,
                                     isAuthor = isAuthor,
+                                    messageLabel = message.content,
                                     modifier = if (isFirstImage && firstContentIsImage && isImage) {
                                         Modifier.padding(all = 2.dp)
                                     } else {
@@ -515,7 +514,12 @@ fun MessageItem(
                                 )
                             }
                         }
-                        if (message.content.isNotBlank() && !isCorrupted) {
+                        val hideFilenamePlaceholderCaption = message.pendingFileUri != null &&
+                            pendingIsImage &&
+                            message.files.isNullOrEmpty() &&
+                            message.pendingFilename != null &&
+                            message.content == message.pendingFilename
+                        if (message.content.isNotBlank() && !isCorrupted && !hideFilenamePlaceholderCaption) {
                             Text(
                                 text = message.content,
                                 style = MaterialTheme.typography.bodyMedium,
@@ -529,14 +533,14 @@ fun MessageItem(
                         }
 
                         // Timestamp, sending indicator, and edited indicator
-                        val isSendingText = message.id < 0 && message.uploadJobId == null
+                        val isPendingOutbound = message.id < 0 && message.files.isNullOrEmpty()
                         Row(
                             modifier = Modifier
                                 .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 8.dp),
                             horizontalArrangement = Arrangement.End,
                             verticalAlignment = Alignment.CenterVertically
                         ) {
-                            if (isSendingText) {
+                            if (isPendingOutbound) {
                                 CircularProgressIndicator(
                                     modifier = Modifier.size(12.dp),
                                     strokeWidth = 1.5.dp,
@@ -582,32 +586,3 @@ fun MessageItem(
     }
 }
 
-@ExperimentalTime
-private fun formatTime(timestamp: String): String {
-    return try {
-        Instant.parse(timestamp).toLocalDateTime(TimeZone.currentSystemDefault()).let {
-            "${
-                it.hour.toString().padStart(2, '0')
-            }:${
-                it.minute.toString().padStart(2, '0')
-            }"
-        }
-    } catch (_: Exception) {
-        // Fallback: try parsing without timezone if it fails
-        try {
-            val parts = timestamp.split("T")
-            if (parts.size == 2) {
-                val timePart = parts[1].split(".")[0]
-                if (timePart.length >= 5) {
-                    timePart.take(5) // Return HH:mm
-                } else {
-                    ""
-                }
-            } else {
-                ""
-            }
-        } catch (_: Exception) {
-            ""
-        }
-    }
-}

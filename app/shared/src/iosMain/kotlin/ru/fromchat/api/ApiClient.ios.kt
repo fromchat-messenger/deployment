@@ -22,8 +22,9 @@ actual fun createPlatformHttpClient(
         }
 
         install(HttpTimeout) {
-            requestTimeoutMillis = 30000
-            connectTimeoutMillis = 30000
+            requestTimeoutMillis = 30_000
+            connectTimeoutMillis = 5_000
+            socketTimeoutMillis = 30_000
         }
 
         block(this)

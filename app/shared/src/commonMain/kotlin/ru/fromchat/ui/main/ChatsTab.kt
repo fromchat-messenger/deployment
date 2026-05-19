@@ -64,6 +64,9 @@ import ru.fromchat.api.UserStatus
 import ru.fromchat.api.UserStatusStore
 import ru.fromchat.api.db.CachedConversation
 import ru.fromchat.api.db.MessageCacheStore
+import ru.fromchat.api.db.MessageRepository
+import ru.fromchat.core.cache.CacheContext
+import ru.fromchat.core.config.Config
 import ru.fromchat.app_name
 import ru.fromchat.chat_last_mesaage
 import ru.fromchat.net.NetworkConnectivity
@@ -172,25 +175,25 @@ fun ChatsTab(
         }
     }
 
-    LaunchedEffect(Unit) {
-        // Load cached DM conversations first for instant offline display.
-        runCatching {
-            dmConversations = MessageCacheStore.loadCachedDmConversations()
-        }
+    val serverConfig by Config.serverConfig.collectAsState()
+    val activeInstanceId by CacheContext.activeInstanceId.collectAsState()
 
+    LaunchedEffect(serverConfig, activeInstanceId) {
+        if (activeInstanceId.isBlank()) return@LaunchedEffect
         runCatching {
-            val last = MessageCacheStore.loadRecentPublicMessages(1).lastOrNull()
+            dmConversations = MessageRepository.loadCachedDmConversations()
+        }
+        runCatching {
+            val last = MessageRepository.loadRecentPublicMessages(1).lastOrNull()
             publicLastMessagePreview = last?.content?.trim()?.takeIf { it.isNotEmpty() }
         }
-
-        // Then refresh from network and update cache + state.
         runCatching {
             ApiClient.getDmConversations()
         }.onSuccess { conversations ->
             runCatching {
                 conversations.forEach { ProfileCache.mergeFromDmUser(it.user) }
-                MessageCacheStore.replaceDmConversations(conversations)
-                dmConversations = MessageCacheStore.loadCachedDmConversations()
+                MessageRepository.replaceDmConversations(conversations)
+                dmConversations = MessageRepository.loadCachedDmConversations()
             }
         }
     }

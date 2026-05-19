@@ -4,8 +4,10 @@ import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.rememberCoroutineScope
+import ru.fromchat.core.cache.CacheContext
 import androidx.compose.ui.Modifier
 import androidx.navigation.NavController
 import ru.fromchat.ui.HapticFeedbackEvent
@@ -39,8 +41,8 @@ fun DmChatRoute(
     animatedVisibilityScope: AnimatedVisibilityScope,
     modifier: Modifier = Modifier,
 ) {
-    val scope = rememberCoroutineScope()
-    val panel = remember(otherUserId, scope) { DmPanelCache.getOrCreate(otherUserId, scope) }
+    val activeInstanceId by CacheContext.activeInstanceId.collectAsState()
+    val panel = remember(otherUserId, activeInstanceId) { DmPanelCache.getOrCreate(otherUserId) }
     val haptic = rememberHapticFeedback()
     val sharedAvatarKey = remember(otherUserId) { "$DM_AVATAR_KEY_PREFIX$otherUserId" }
 
@@ -66,8 +68,8 @@ fun DmProfileRoute(
     animatedVisibilityScope: AnimatedVisibilityScope,
     modifier: Modifier = Modifier,
 ) {
-    val scope = rememberCoroutineScope()
-    val panel = remember(otherUserId, scope) { DmPanelCache.getOrCreate(otherUserId, scope) }
+    val activeInstanceId by CacheContext.activeInstanceId.collectAsState()
+    val panel = remember(otherUserId, activeInstanceId) { DmPanelCache.getOrCreate(otherUserId) }
     val haptic = rememberHapticFeedback()
     val sharedAvatarKey = remember(otherUserId) { "$DM_AVATAR_KEY_PREFIX$otherUserId" }
     val stateSnapshot = panel.getState()

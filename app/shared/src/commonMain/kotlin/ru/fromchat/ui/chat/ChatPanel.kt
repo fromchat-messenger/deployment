@@ -8,9 +8,15 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
+import ru.fromchat.api.ApiClient
 import ru.fromchat.api.Message
+import ru.fromchat.api.generateClientMessageId
+import ru.fromchat.api.nowMessageTimestampIso
+import ru.fromchat.api.sortMessagesForChatDisplay
 import ru.fromchat.api.WebSocketMessage
 import ru.fromchat.core.Logger
+import ru.fromchat.ui.chat.dedupeMessagesByClientId
+import ru.fromchat.ui.chat.dropSupersededOptimisticMessages
 import kotlin.time.Clock
 import kotlin.time.ExperimentalTime
 
@@ -70,6 +76,17 @@ abstract class ChatPanel(
      */
     fun getState(): ChatPanelState = _state.copy()
 
+    /** Merge SQLDelight rows with in-memory optimistic attachment UI (pending preview, thumbnails). */
+    suspend fun syncMessagesFromDatabase(messages: List<Message>) {
+        batchStateUpdates {
+            updateState { current ->
+                val merged = mergeDatabaseMessagesWithPanelState(current.messages, messages)
+                if (current.messages == merged) current
+                else current.copy(messages = merged)
+            }
+        }
+    }
+
     /**
      * Update state
      */
@@ -103,9 +120,9 @@ abstract class ChatPanel(
             batchDepth--
             if (batchDepth == 0) {
                 val callback = onStateChange
-                val stateToSend = pendingBatchedState
                 pendingBatchedState = null
-                if (callback != null && stateToSend != null) {
+                val stateToSend = _state.copy()
+                if (callback != null) {
                     scope.launch(Dispatchers.Main) {
                         Logger.d(
                             "ChatPanel",
@@ -142,7 +159,7 @@ abstract class ChatPanel(
             if (!messageExists) {
                 Logger.d("ChatPanel", "Adding message: id=${message.id}, content=${message.content.take(50)}")
                 updateState { currentState ->
-                    val newMessages = currentState.messages + message
+                    val newMessages = sortMessagesForChatDisplay(currentState.messages + message)
                     Logger.d("ChatPanel", "Messages count after add: ${newMessages.size}")
                     currentState.copy(messages = newMessages)
                 }
@@ -170,7 +187,11 @@ abstract class ChatPanel(
             }
             if (newOnes.isNotEmpty()) {
                 updateState { currentState ->
-                    val newMessages = (currentState.messages + newOnes).sortedBy { it.timestamp }
+                    val merged = dropSupersededOptimisticMessages(
+                        currentState.messages + newOnes,
+                        ApiClient.user?.id,
+                    )
+                    val newMessages = sortMessagesForChatDisplay(dedupeMessagesByClientId(merged))
                     currentState.copy(messages = newMessages)
                 }
             }
@@ -194,6 +215,40 @@ abstract class ChatPanel(
         }
     }
 
+    fun updateMessageByClientMessageId(clientMessageId: String, updates: (Message) -> Message) {
+        val cid = clientMessageId.trim()
+        if (cid.isEmpty()) return
+        updateState { currentState ->
+            currentState.copy(
+                messages = currentState.messages.map { msg ->
+                    if (msg.client_message_id == cid || msg.uploadJobId == cid) updates(msg) else msg
+                },
+            )
+        }
+    }
+
+    /** Conversation id used for outbox / local DB (DM peer or public group). */
+    abstract fun outboxConversationId(): String
+
+    open suspend fun cancelQueuedMessage(message: Message) {
+        val cid = message.client_message_id?.trim().orEmpty()
+        if (cid.isEmpty()) return
+        if (message.pendingFileUri != null) {
+            clearOutboundImageCaches(cid, message.id)
+        }
+        removeMessage(message.id)
+        ru.fromchat.api.outbox.OutgoingMessageCoordinator.cancelOutboundMessage(cid, outboxConversationId())
+    }
+
+    suspend fun cancelQueuedMessageByClientId(clientMessageId: String) {
+        val cid = clientMessageId.trim()
+        if (cid.isEmpty()) return
+        val message = _state.messages.find { msg ->
+            msg.client_message_id == cid || msg.uploadJobId == cid
+        } ?: return
+        cancelQueuedMessage(message)
+    }
+
     /**
      * Remove message from list
      */
@@ -212,6 +267,23 @@ abstract class ChatPanel(
      */
     protected fun clearMessages() {
         updateState { it.copy(messages = emptyList()) }
+    }
+
+    /** In-flight sends only (active [pendingMessages]), not stale cache optimistics. */
+    protected fun snapshotPendingOptimisticMessages(): List<Message> {
+        if (pendingMessages.isEmpty()) return emptyList()
+        val pendingClientIds = pendingMessages.keys
+        return _state.messages.filter { msg ->
+            val cid = msg.client_message_id?.trim().orEmpty()
+            cid.isNotEmpty() && cid in pendingClientIds
+        }
+    }
+
+    protected suspend fun restorePendingOptimisticMessages(messages: List<Message>) {
+        if (messages.isEmpty()) return
+        val filtered = dropSupersededOptimisticMessages(messages, ApiClient.user?.id)
+        if (filtered.isEmpty()) return
+        addMessages(filtered)
     }
 
     /**
@@ -258,7 +330,7 @@ abstract class ChatPanel(
                     mapped + confirmedMessage
                 else -> mapped
             }
-            currentState.copy(messages = messages)
+            currentState.copy(messages = sortMessagesForChatDisplay(messages))
         }
         scope.launch(Dispatchers.Default) {
             runCatching { onOptimisticMessageConfirmed(tempId, confirmedMessage) }
@@ -274,7 +346,7 @@ abstract class ChatPanel(
     suspend fun retryMessage(messageId: Int) {
         val message = _state.messages.find { it.id == messageId } ?: return
 
-        val tempId = "temp_${Clock.System.now().toEpochMilliseconds()}_${(0..999999).random()}"
+        val tempId = generateClientMessageId()
         val newOptimistic = message.copy(
             id = uniqueOptimisticMessageId(),
             client_message_id = tempId
@@ -334,12 +406,12 @@ abstract class ChatPanel(
         if (content.isBlank()) return
 
         // Create temporary message for immediate display
-        val tempId = "temp_${Clock.System.now().toEpochMilliseconds()}_${(0..999999).random()}"
+        val tempId = generateClientMessageId()
         val tempMessage = Message(
             id = -1, // Temporary negative ID
             user_id = currentUserId ?: -1,
             content = content.trim(),
-            timestamp = Clock.System.now().toString(),
+            timestamp = nowMessageTimestampIso(),
             is_read = false,
             is_edited = false,
             username = "You",
@@ -390,6 +462,9 @@ abstract class ChatPanel(
 
     /** Persist optimistic row for offline / process death; no-op by default. */
     protected open suspend fun persistOptimisticMessage(message: Message) {}
+
+    /** Persists an outbound row to the local DB (DM/public overrides). */
+    suspend fun persistOutboundMessage(message: Message) = persistOptimisticMessage(message)
 
     protected open suspend fun removeOptimisticFromCache(message: Message) {}
 

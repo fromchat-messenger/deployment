@@ -13,7 +13,7 @@ data class AttachmentUploadJob(
 
 sealed class AttachmentUploadProgress {
     data class Pending(val jobId: String, val filename: String) : AttachmentUploadProgress()
-    data class InProgress(val jobId: String, val percent: Int) : AttachmentUploadProgress()
+    data class InProgress(val jobId: String, val percent: Int, val filename: String? = null) : AttachmentUploadProgress()
     data class Success(val jobId: String) : AttachmentUploadProgress()
     data class Failed(val jobId: String, val error: String) : AttachmentUploadProgress()
 }

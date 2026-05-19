@@ -137,7 +137,14 @@ import ru.fromchat.server_config_snackbar_api_fail
 import ru.fromchat.server_config_snackbar_defaults
 import ru.fromchat.server_config_snackbar_ok_api_calls_bad
 import ru.fromchat.server_config_snackbar_ok_calls
+import ru.fromchat.server_config_snackbar_ok_calls_skip
+import ru.fromchat.server_config_snackbar_timeout
+import ru.fromchat.server_config_unsupported_no_instance_id
+import ru.fromchat.server_config_checking
 import ru.fromchat.server_config_subtitle
+import ru.fromchat.core.instance.ServerProbeResult
+import ru.fromchat.core.instance.applyServerAndNavigate
+import ru.fromchat.core.instance.probeServer
 import ru.fromchat.server_config_title
 import ru.fromchat.server_ip_hint
 import ru.fromchat.server_ip_label
@@ -435,6 +442,8 @@ fun ServerConfigScreen() {
     }
 
     var busy by remember { mutableStateOf(false) }
+    var lastProbe by remember { mutableStateOf<ServerProbeResult?>(null) }
+    var lastProbedConfig by remember { mutableStateOf<ServerConfigData?>(null) }
     var showResetDialog by remember { mutableStateOf(false) }
     val actionHazeState = rememberHazeState()
     val serverConfigListState = rememberLazyListState()
@@ -445,6 +454,9 @@ fun ServerConfigScreen() {
     val strPortError = stringResource(Res.string.server_config_port_error)
     val strSnackbarApiFail = stringResource(Res.string.server_config_snackbar_api_fail)
     val strSnackbarOkApiCallsBad = stringResource(Res.string.server_config_snackbar_ok_api_calls_bad)
+    val strSnackbarTimeout = stringResource(Res.string.server_config_snackbar_timeout)
+    val strUnsupportedInstance = stringResource(Res.string.server_config_unsupported_no_instance_id)
+    val strChecking = stringResource(Res.string.server_config_checking)
     val strResetConfirmTitle = stringResource(Res.string.server_config_action_reset_confirm_title)
     val strResetConfirmBody = stringResource(Res.string.server_config_action_reset_confirm_body)
 
@@ -473,50 +485,48 @@ fun ServerConfigScreen() {
         }
     }
 
+    fun buildTentativeConfig(): ServerConfigData? {
+        val host = serverIp.trim()
+        if (host.isEmpty() || !isValidIpOrHostname(host)) return null
+        if (apiPortText.isNotEmpty() && !isValidPortNumber(apiPortText)) return null
+        if (callsPortText.isNotEmpty() && !isValidPortNumber(callsPortText)) return null
+        return ServerConfigData(
+            serverIp = host,
+            apiPort = resolvedApiPort(apiPortText),
+            callsPort = effectiveCallsPort(callsPortText),
+            httpsEnabled = httpsEnabled,
+        )
+    }
+
     val verifyServer: () -> Unit = {
         scope.launch {
-            // Do not block actual checks on snackbar dismissal.
-            launch { snackbarHostState.showSnackbar("Checking...") }
-            val host = serverIp.trim()
-            if (host.isEmpty() || !isValidIpOrHostname(host)) {
-                snackbarHostState.showSnackbar(strHostError)
+            launch { snackbarHostState.showSnackbar(strChecking) }
+            val tentative = buildTentativeConfig()
+            if (tentative == null) {
+                snackbarHostState.showSnackbar(
+                    if (serverIp.isNotEmpty() && !isValidIpOrHostname(serverIp.trim())) {
+                        strHostError
+                    } else {
+                        strPortError
+                    },
+                )
                 return@launch
             }
-            if (apiPortText.isNotEmpty() && !isValidPortNumber(apiPortText)) {
-                snackbarHostState.showSnackbar(strPortError)
-                return@launch
-            }
-            if (callsPortText.isNotEmpty() && !isValidPortNumber(callsPortText)) {
-                snackbarHostState.showSnackbar(strPortError)
-                return@launch
-            }
-            val apiPort = resolvedApiPort(apiPortText)
-            val calls = effectiveCallsPort(callsPortText)
-            val tentative = ServerConfigData(
-                serverIp = host,
-                apiPort = apiPort,
-                callsPort = calls,
-                httpsEnabled = httpsEnabled,
-            )
-            val apiBase = apiBaseUrlFor(tentative)
-
-            val msg = runCatching {
-                withTimeout(3000) {
-                    val pingMark = TimeSource.Monotonic.markNow()
-                    val id = ApiClient.fetchServerInstanceId(apiBase)
-                    val pingMs = pingMark.elapsedNow().inWholeMilliseconds
-                        .toInt()
-                        .coerceAtLeast(0)
-                    if (id.isEmpty()) return@withTimeout strSnackbarApiFail
-
-                    val urlScheme = if (httpsEnabled) "https" else "http"
-                    val root = "$urlScheme://${hostForAuthority(host)}:${calls}/"
-                    val callsOk = ApiClient.probeHttpGet(root)
-                    if (callsOk) getString(Res.string.server_config_snackbar_ok_calls, pingMs)
-                    else strSnackbarOkApiCallsBad
+            val probe = probeServer(tentative)
+            lastProbe = probe
+            lastProbedConfig = tentative
+            val msg = when (probe) {
+                is ServerProbeResult.Supported -> {
+                    if (probe.callsOk) {
+                        getString(Res.string.server_config_snackbar_ok_calls, probe.pingMs)
+                    } else {
+                        getString(Res.string.server_config_snackbar_ok_calls_skip, probe.pingMs)
+                    }
                 }
-            }.getOrElse { strSnackbarApiFail }
-
+                ServerProbeResult.Unsupported -> strUnsupportedInstance
+                ServerProbeResult.Timeout -> strSnackbarTimeout
+                ServerProbeResult.Unreachable -> strSnackbarApiFail
+            }
             snackbarHostState.showSnackbar(msg)
         }
     }
@@ -605,61 +615,54 @@ fun ServerConfigScreen() {
                             scope.launch {
                                 busy = true
                                 try {
-                                    val tentative = ServerConfigData(
-                                        serverIp = serverIp.trim(),
-                                        apiPort = apiPortEffective,
-                                        callsPort = callsPortParsed,
-                                        httpsEnabled = httpsEnabled,
-                                    )
-                                    val tentativeApi = apiBaseUrlFor(tentative)
-                                    val newId = runCatching {
-                                        ApiClient.fetchServerInstanceId(tentativeApi)
-                                    }.getOrNull()?.trim().orEmpty()
-                                    if (newId.isEmpty()) {
-                                        withContext(Dispatchers.Main) {
-                                            reloginClearingSession(navController)
+                                    val tentative = buildTentativeConfig() ?: return@launch
+                                    val probe = if (
+                                        lastProbedConfig == tentative && lastProbe != null
+                                    ) {
+                                        lastProbe!!
+                                    } else {
+                                        probeServer(tentative).also {
+                                            lastProbe = it
+                                            lastProbedConfig = tentative
                                         }
-                                        return@launch
                                     }
-
-                                    val bearer = ApiClient.token?.trim().orEmpty()
-                                    if (bearer.isEmpty()) {
-                                        val callsOk = probeCallsReachable(tentative)
-                                        Config.updateServerConfig(tentative.copy(callsEnabled = callsOk))
-                                        Settings.lastKnownServerInstanceId = newId
-                                        WebSocketManager.disconnect()
-                                        withContext(Dispatchers.Main) {
-                                            navController.navigateAndWipeBackStack("login")
+                                    when (probe) {
+                                        ServerProbeResult.Unsupported -> {
+                                            snackbarHostState.showSnackbar(strUnsupportedInstance)
                                         }
-                                        return@launch
-                                    }
-
-                                    val persisted = Settings.lastKnownServerInstanceId.trim()
-                                    if (persisted.isNotEmpty() && !newId.equals(persisted, ignoreCase = true)) {
-                                        withContext(Dispatchers.Main) {
-                                            reloginClearingSession(navController)
+                                        ServerProbeResult.Timeout -> {
+                                            snackbarHostState.showSnackbar(strSnackbarTimeout)
                                         }
-                                        return@launch
-                                    }
-
-                                    val authOk = ApiClient.checkAuthAt(tentativeApi, bearer)
-                                    if (!authOk) {
-                                        withContext(Dispatchers.Main) {
-                                            reloginClearingSession(navController)
+                                        ServerProbeResult.Unreachable -> {
+                                            snackbarHostState.showSnackbar(strSnackbarApiFail)
                                         }
-                                        return@launch
-                                    }
-
-                                    val callsOk = probeCallsReachable(tentative)
-                                    Config.updateServerConfig(tentative.copy(callsEnabled = callsOk))
-                                    Settings.lastKnownServerInstanceId = newId
-                                    WebSocketManager.disconnect()
-                                    WebSocketManager.connect(forceRestart = true)
-                                    withContext(Dispatchers.Main) {
-                                        if (!navController.popBackStack()) {
-                                            navController.navigate("chat") {
-                                                popUpTo("login") { inclusive = true }
-                                            }
+                                        is ServerProbeResult.Supported -> {
+                                            Settings.lastKnownServerInstanceId = probe.instanceId
+                                            val bearer = ApiClient.token?.trim().orEmpty()
+                                            applyServerAndNavigate(
+                                                probe = probe,
+                                                config = tentative,
+                                                bearer = bearer,
+                                                onNavigateLogin = {
+                                                    withContext(Dispatchers.Main) {
+                                                        navController.navigateAndWipeBackStack("login")
+                                                    }
+                                                },
+                                                onNavigateChat = {
+                                                    withContext(Dispatchers.Main) {
+                                                        if (!navController.popBackStack()) {
+                                                            navController.navigate("chat") {
+                                                                popUpTo("login") { inclusive = true }
+                                                            }
+                                                        }
+                                                    }
+                                                },
+                                                onLogoutOldHost = {
+                                                    withContext(Dispatchers.Main) {
+                                                        reloginClearingSession(navController)
+                                                    }
+                                                },
+                                            )
                                         }
                                     }
                                 } finally {

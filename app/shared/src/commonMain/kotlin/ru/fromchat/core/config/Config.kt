@@ -28,10 +28,10 @@ object Config {
     }
 
     /**
-     * Update server configuration
+     * Update server configuration (persists to storage before updating in-memory state).
      */
-    fun updateServerConfig(config: ServerConfigData) {
-        Settings.serverConfig = config
+    suspend fun updateServerConfig(config: ServerConfigData) {
+        Settings.setServerConfig(config)
         _serverConfig.value = config
     }
 

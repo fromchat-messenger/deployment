@@ -85,20 +85,7 @@ val LocalSupportClipboardManager = compositionLocalOf<SupportClipboardManager> {
 
 val supportClipboardManagerImpl @Composable get() = LocalClipboard().toSupport()
 
-inline fun Clipboard.toSupport() = object : SupportClipboardManager {
-    private var listener: ((String) -> Unit)? = null
-
-    override suspend fun setText(string: String) {
-        setText(string)
-        listener?.invoke(string)
-    }
-
-    override suspend fun getText() = this@toSupport.getClipEntry()?.toString() ?: ""
-
-    override fun setTextListener(listener: (String) -> Unit) {
-        this.listener = listener
-    }
-}
+expect fun Clipboard.toSupport(): SupportClipboardManager
 
 fun String.toAnnotatedString() = AnnotatedString(this)
 

@@ -83,6 +83,7 @@ kotlin {
         }
 
         androidMain.dependencies {
+            implementation(libs.androidx.exifinterface)
             implementation(libs.ktor.client.okhttp)
             implementation(libs.firebase.messaging)
             implementation(libs.androidx.activity.compose)
@@ -115,6 +116,10 @@ compose.resources {
     publicResClass = true
     packageOfResClass = "ru.fromchat"
     generateResClass = auto
+}
+
+tasks.matching { it.name == "compileAndroidMain" || it.name == "compileKotlinIosArm64" }.configureEach {
+    dependsOn("generateResourceAccessorsForCommonMain")
 }
 
 tasks.register("generateResourceAccessors") {

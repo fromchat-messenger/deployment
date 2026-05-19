@@ -17,3 +17,5 @@ actual fun rememberFilePicker(onResult: (List<String>) -> Unit): () -> Unit {
 }
 
 actual suspend fun getImageAspectRatio(uri: String): Float? = null
+
+actual suspend fun getImageDimensions(uri: String): Pair<Int, Int>? = null

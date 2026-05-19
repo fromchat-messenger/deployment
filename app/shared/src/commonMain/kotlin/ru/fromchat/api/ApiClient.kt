@@ -18,6 +18,14 @@ import io.ktor.client.plugins.websocket.pingInterval
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
+import io.ktor.client.statement.bodyAsChannel
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.http.contentLength
+import io.ktor.utils.io.core.isEmpty
+import io.ktor.utils.io.core.readBytes
+import io.ktor.utils.io.readRemaining
+import com.pr0gramm3r101.utils.files.PlatformFileSystem
 import io.ktor.client.request.patch
 import io.ktor.client.request.parameter
 import io.ktor.client.request.post
@@ -36,6 +44,8 @@ import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.encodeToJsonElement
 import ru.fromchat.core.Settings
 import ru.fromchat.core.config.Config
+import ru.fromchat.core.instance.InstanceIdGuard
+import ru.fromchat.api.db.InstanceRegistryStore
 import ru.fromchat.ui.chat.PublicChatPanelCache
 import ru.fromchat.ui.dm.DmPanelCache
 import ru.fromchat.fcm.uploadPendingFcmTokenIfAvailable
@@ -150,6 +160,12 @@ object ApiClient {
         // - 403 => forbidden, keep session intact (used for read-only/suspension workflows).
         HttpResponseValidator {
             validateResponse { response ->
+                val instanceHeader = response.headers[InstanceIdGuard.INSTANCE_ID_HEADER]
+                runCatching {
+                    Config.serverConfig.value?.let { cfg ->
+                        InstanceIdGuard.onResponseHeader(instanceHeader, cfg)
+                    }
+                }
                 if (response.status.value == 401) {
                     token = null
                     user = null
@@ -194,6 +210,20 @@ object ApiClient {
             defaultRequest {
                 header("User-Agent", userAgent)
             }
+            HttpResponseValidator {
+                validateResponse { response ->
+                    val instanceHeader = response.headers[InstanceIdGuard.INSTANCE_ID_HEADER]
+                    runCatching {
+                        InstanceIdGuard.onResponseHeader(instanceHeader)
+                    }
+                    if (response.status.value !in (200..299) + 101) {
+                        throw ClientRequestException(
+                            response,
+                            response.status.description,
+                        )
+                    }
+                }
+            }
         }
     }
 
@@ -222,6 +252,7 @@ object ApiClient {
             val id = fetchServerInstanceId(Config.apiBaseUrl)
             if (id.isNotEmpty()) {
                 Settings.lastKnownServerInstanceId = id
+                InstanceRegistryStore.registerInstanceEncountered(id)
             }
         }
     }
@@ -546,16 +577,147 @@ object ApiClient {
      * Fetch encrypted file bytes. Path is e.g. "/uploads/files/encrypted/xxx.jpg" or "/api/uploads/files/encrypted/xxx.jpg".
      * Backend may return path with /api prefix; apiBaseUrl already includes /api, so we avoid double /api.
      */
-    suspend fun fetchEncryptedFile(path: String): ByteArray {
-        val url = when {
-            path.startsWith("http") -> path
-            path.startsWith("/api") -> {
-                val serverBase = Config.apiBaseUrl.removeSuffix("/api")
-                "$serverBase$path"
-            }
-            else -> "${Config.apiBaseUrl}$path"
+    fun encryptedFileUrl(path: String): String = when {
+        path.startsWith("http") -> path
+        path.startsWith("/api") -> {
+            val serverBase = Config.apiBaseUrl.removeSuffix("/api")
+            "$serverBase$path"
         }
-        return http.get(url).body()
+        else -> "${Config.apiBaseUrl}$path"
+    }
+
+    suspend fun fetchEncryptedFile(path: String): ByteArray =
+        fetchEncryptedFileResumable(path, resumeKey = null, onProgress = null)
+
+    /**
+     * Downloads encrypted file bytes with optional resume ([resumeKey] partial on disk) and progress.
+     */
+    suspend fun fetchEncryptedFileResumable(
+        path: String,
+        resumeKey: String?,
+        onProgress: ((percent: Int) -> Unit)?,
+    ): ByteArray {
+        val url = encryptedFileUrl(path)
+        val partialPath = resumeKey?.let { partialEncryptedDownloadPath(it) }
+        val prefix = partialPath?.let { readPartialEncryptedBytes(it) } ?: ByteArray(0)
+        val offset = prefix.size
+
+        onProgress?.invoke(if (offset > 0) percentForBytes(offset, offset.coerceAtLeast(1)) else 1)
+
+        val response = http.get(url) {
+            if (offset > 0) {
+                header(HttpHeaders.Range, "bytes=$offset-")
+            }
+        }
+
+        return when (response.status) {
+            HttpStatusCode.PartialContent -> {
+                readDownloadBody(
+                    response = response,
+                    prefix = prefix,
+                    partialPath = partialPath,
+                    onProgress = onProgress,
+                )
+            }
+            HttpStatusCode.OK -> {
+                if (offset > 0) {
+                    partialPath?.let { PlatformFileSystem.delete(it) }
+                }
+                readDownloadBody(
+                    response = response,
+                    prefix = if (offset > 0) ByteArray(0) else prefix,
+                    partialPath = partialPath,
+                    onProgress = onProgress,
+                )
+            }
+            else -> {
+                val bytes = response.body<ByteArray>()
+                onProgress?.invoke(100)
+                partialPath?.let { PlatformFileSystem.delete(it) }
+                bytes
+            }
+        }
+    }
+
+    private suspend fun readDownloadBody(
+        response: HttpResponse,
+        prefix: ByteArray,
+        partialPath: String?,
+        onProgress: ((percent: Int) -> Unit)?,
+    ): ByteArray {
+        val channel = response.bodyAsChannel()
+        var buffer = prefix
+        var received = prefix.size
+        val totalBytes = responseTotalBytes(response, received)
+
+        while (!channel.isClosedForRead) {
+            val packet = channel.readRemaining(16 * 1024)
+            if (packet.isEmpty) break
+            val chunk = packet.readBytes()
+            if (chunk.isEmpty()) continue
+            buffer = buffer + chunk
+            received += chunk.size
+            partialPath?.let { PlatformFileSystem.writeBytes(it, buffer) }
+            onProgress?.invoke(
+                if (totalBytes != null && totalBytes > 0) {
+                    percentForBytes(received, totalBytes)
+                } else {
+                    (received / 32_768).coerceIn(1, 99)
+                },
+            )
+        }
+
+        onProgress?.invoke(100)
+        partialPath?.let { PlatformFileSystem.delete(it) }
+        return buffer
+    }
+
+    private fun responseTotalBytes(response: HttpResponse, receivedSoFar: Int): Int? {
+        val contentRange = response.headers[HttpHeaders.ContentRange]
+        if (contentRange != null) {
+            val total = contentRange.substringAfterLast('/').toLongOrNull()
+            if (total != null && total > 0L) return total.toInt()
+        }
+        val contentLength = response.contentLength()?.toInt()
+        return when {
+            response.status == HttpStatusCode.PartialContent && contentLength != null ->
+                receivedSoFar + contentLength
+            contentLength != null && contentLength > 0 -> contentLength
+            else -> null
+        }
+    }
+
+    /** Drops a partial encrypted download so the next attempt starts clean. */
+    fun clearPartialEncryptedDownload(resumeKey: String) {
+        partialEncryptedDownloadPath(resumeKey)?.let { path ->
+            runCatching { PlatformFileSystem.delete(path) }
+        }
+    }
+
+    private fun partialEncryptedDownloadPath(resumeKey: String): String? {
+        val base = PlatformFileSystem.getAppCacheDirectory()
+        if (base.isEmpty()) return null
+        val dir = "$base/encrypted_downloads"
+        PlatformFileSystem.ensureDirectory(dir)
+        val safe = resumeKey.replace(Regex("[^a-zA-Z0-9._-]"), "_")
+        return "$dir/partial_$safe.enc"
+    }
+
+    private suspend fun readPartialEncryptedBytes(path: String): ByteArray? {
+        if (!PlatformFileSystem.exists(path)) return null
+        return runCatching {
+            ru.fromchat.core.cache.readOutboundFileBytes("file://$path")
+        }.getOrNull()?.takeIf { it.isNotEmpty() }
+    }
+
+    private fun percentForBytes(received: Int, total: Int): Int {
+        if (received <= 0 || total <= 0) return 0
+        val raw = ((received.toDouble() / total.toDouble()) * 100.0).toInt()
+        return when {
+            raw <= 0 -> 1
+            raw >= 100 -> 99
+            else -> raw
+        }
     }
 
     /**
@@ -806,6 +968,25 @@ object ApiClient {
                 data = json.encodeToJsonElement(
                     WebSocketDeleteMessageRequest(
                         message_id = messageId
+                    )
+                )
+            )
+        )
+    }
+
+    suspend fun deleteDm(messageId: Int, recipientId: Int) {
+        if (_suspensionState.value.isSuspended) return
+        WebSocketManager.send(
+            WebSocketMessage(
+                type = "dmDelete",
+                credentials = WebSocketCredentials(
+                    scheme = "Bearer",
+                    credentials = getTokenSafely()
+                ),
+                data = json.encodeToJsonElement(
+                    WebSocketDeleteDmRequest(
+                        id = messageId,
+                        recipientId = recipientId,
                     )
                 )
             )

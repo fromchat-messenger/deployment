@@ -57,7 +57,9 @@ suspend fun decryptEnvelope(envelope: DmEnvelope, currentUserId: Int?): String {
 suspend fun decryptFile(
     file: ru.fromchat.api.DmFile,
     envelope: DmEnvelope,
-    currentUserId: Int?
+    currentUserId: Int?,
+    downloadResumeKey: String? = null,
+    onDownloadProgress: ((Int) -> Unit)? = null,
 ): ByteArray {
     val wrappedMekB64 = file.wrappedMekB64
         ?: envelope.files?.find { it.path == file.path }?.wrappedMekB64
@@ -68,7 +70,18 @@ suspend fun decryptFile(
         ?: throw IllegalArgumentException("No nonce available for file decryption: ${file.path}")
 
     val mek = unwrapMek(wrappedMekB64, envelope, currentUserId)
-    val encryptedBytes = ru.fromchat.api.ApiClient.fetchEncryptedFile(file.path)
-    val ciphertextB64 = com.pr0gramm3r101.utils.crypto.Base64.encode(encryptedBytes)
-    return DmCrypto.decryptEnvelope(nonceB64, ciphertextB64, mek)
+    ru.fromchat.core.Logger.d("DmCrypto", "fetchEncryptedFile path=${file.path}")
+    val encryptedBytes = if (downloadResumeKey != null) {
+        ru.fromchat.api.ApiClient.fetchEncryptedFileResumable(
+            path = file.path,
+            resumeKey = downloadResumeKey,
+            onProgress = onDownloadProgress,
+        )
+    } else {
+        ru.fromchat.api.ApiClient.fetchEncryptedFile(file.path)
+    }
+    if (encryptedBytes.isEmpty()) {
+        throw IllegalArgumentException("Encrypted file is empty: ${file.path}")
+    }
+    return DmCrypto.decryptAesGcm(nonceB64, encryptedBytes, mek)
 }

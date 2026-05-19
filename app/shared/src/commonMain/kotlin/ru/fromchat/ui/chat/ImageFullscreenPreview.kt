@@ -61,16 +61,17 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
-import coil3.compose.AsyncImage
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
-import kotlinx.datetime.TimeZone
 import org.jetbrains.compose.resources.stringResource
 import ru.fromchat.Res
-import kotlinx.datetime.toLocalDateTime
 import ru.fromchat.api.Message
+import ru.fromchat.api.formatMessageDateTimeLocal
 import ru.fromchat.*
 import ru.fromchat.ui.BackHandler
 import ru.fromchat.ui.LocalSystemBarsVisibility
@@ -78,9 +79,6 @@ import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
-import kotlin.time.ExperimentalTime
-import kotlin.time.Instant
-
 private val MENU_BG_ALPHA = 0.5f
 
 private data class InitialTransform(
@@ -90,22 +88,6 @@ private data class InitialTransform(
     val cornerRadius: Float,
     val bgAlpha: Float
 )
-
-@OptIn(ExperimentalTime::class)
-private fun formatDateTime(timestamp: String): String {
-    return try {
-        Instant.parse(timestamp).toLocalDateTime(TimeZone.currentSystemDefault()).let {
-            val hour = it.hour.toString().padStart(2, '0')
-            val minute = it.minute.toString().padStart(2, '0')
-            val month = (it.month.ordinal + 1).toString().padStart(2, '0')
-            val day = it.day.toString().padStart(2, '0')
-            val year = it.year
-            "$month/$day/$year $hour:$minute"
-        }
-    } catch (_: Exception) {
-        timestamp
-    }
-}
 
 @Composable
 fun ImageFullscreenPreview(
@@ -133,18 +115,33 @@ fun ImageFullscreenPreview(
     val envelope = message.dmEnvelope
     val thumbnailBase64 = message.fileThumbnails?.getOrNull(fileIndex)
 
-    var cachedPath by remember(message.id, fileIndex, file.path) {
-        mutableStateOf(DecryptedImageCache.getCached(message.id, fileIndex, file.path))
+    val cacheClientId = message.client_message_id?.trim()?.takeIf { it.isNotEmpty() }
+    val decryptCacheKey = remember(message.id, fileIndex, cacheClientId) {
+        DecryptedImageCache.storageKey(message.id, fileIndex, cacheClientId)
     }
-    val thumbnailBytes = remember(thumbnailBase64) {
-        thumbnailBase64?.let { runCatching { com.pr0gramm3r101.utils.crypto.Base64.decode(it) }.getOrNull() }
+    val fsCacheKey = remember(decryptCacheKey) {
+        LocalDecodedImageCache.fullscreenCacheKey(decryptCacheKey)
     }
-
-    LaunchedEffect(message.id, fileIndex, file.path, envelope) {
-        cachedPath = DecryptedImageCache.getOrDecrypt(message.id, fileIndex, file, envelope, currentUserId)
+    var cachedPath by remember(decryptCacheKey) {
+        mutableStateOf(DecryptedImageCache.getCached(message.id, fileIndex, cacheClientId))
     }
-
-    val imageModel = cachedPath ?: thumbnailBytes
+    var previewBitmap by remember(decryptCacheKey) {
+        mutableStateOf(LocalDecodedImageCache.peekFull(decryptCacheKey))
+    }
+    var fullscreenBitmap by remember(fsCacheKey) {
+        mutableStateOf(LocalDecodedImageCache.peekFullscreen(decryptCacheKey))
+    }
+    val hasInstantBitmap = previewBitmap != null || fullscreenBitmap != null
+    val openAspectFromBitmap = previewBitmap?.let { it.width.toFloat() / it.height.toFloat() }
+    val layoutAspectHint = imageAspectRatioForMessage(
+        fileAspectRatios = message.fileAspectRatios,
+        fileDimensions = message.fileDimensions,
+        pendingFileAspectRatio = message.pendingFileAspectRatio,
+        fileIndex = fileIndex,
+        confirmed = message.id > 0,
+    )
+    val thumbLayoutAspect = thumbnailBounds?.takeIf { it.width > 0f && it.height > 0f }
+        ?.let { bounds -> bounds.width / bounds.height }
 
     var menusVisible by remember { mutableStateOf(true) }
     var dismissRequested by remember { mutableStateOf(false) }
@@ -186,11 +183,45 @@ fun ImageFullscreenPreview(
         ) {
             val containerWidth = constraints.maxWidth.toFloat()
             val containerHeight = constraints.maxHeight.toFloat()
-            val fileAspectRatio = message.fileAspectRatios?.getOrNull(fileIndex)?.takeIf { it > 0f }
-            val contentHeightAtScale1 = if (fileAspectRatio != null) containerWidth / fileAspectRatio else containerHeight
+            val fullscreenDecodeSize = remember(constraints.maxWidth, constraints.maxHeight) {
+                ChatPreviewDecodeSize(
+                    widthPx = constraints.maxWidth.coerceAtLeast(1),
+                    heightPx = constraints.maxHeight.coerceAtLeast(1),
+                )
+            }
 
-            when (val model = imageModel) {
-                null -> {
+            LaunchedEffect(decryptCacheKey, fsCacheKey, fullscreenDecodeSize) {
+                val uri = cachedPath ?: DecryptedImageCache.getCached(message.id, fileIndex, cacheClientId)
+                    ?: DecryptedImageCache.getOrDecrypt(
+                        messageId = message.id,
+                        fileIndex = fileIndex,
+                        file = file,
+                        envelope = envelope,
+                        currentUserId = currentUserId,
+                        clientMessageId = cacheClientId,
+                        messageLabel = message.content,
+                    ).also { cachedPath = it }
+                if (uri == null) return@LaunchedEffect
+                val hiRes = withContext(Dispatchers.Default) {
+                    LocalDecodedImageCache.loadFullscreen(decryptCacheKey, uri, fullscreenDecodeSize)
+                }
+                if (hiRes != null) {
+                    fullscreenBitmap = hiRes
+                }
+            }
+
+            val displayBitmap = fullscreenBitmap ?: previewBitmap
+            val displayAspect = displayBitmap?.let { bmp ->
+                bmp.width.toFloat() / bmp.height.toFloat()
+            } ?: message.fileAspectRatios?.getOrNull(fileIndex)?.takeIf { it > 0f }
+            val contentHeightAtScale1 = if (displayAspect != null) {
+                containerWidth / displayAspect
+            } else {
+                containerHeight
+            }
+
+            when {
+                displayBitmap == null -> {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
@@ -205,14 +236,23 @@ fun ImageFullscreenPreview(
                     )
                 }
                 else -> {
+                    val layoutAspect = openAspectFromBitmap
+                        ?: thumbLayoutAspect
+                        ?: layoutAspectHint
+                        ?: displayAspect
+                    val layoutContentHeight = if (layoutAspect != null) {
+                        containerWidth / layoutAspect
+                    } else {
+                        contentHeightAtScale1
+                    }
                     val initial = remember(
-                        thumbnailBounds, containerWidth, containerHeight, contentHeightAtScale1
+                        thumbnailBounds, containerWidth, containerHeight, layoutContentHeight,
                     ) {
-                        if (thumbnailBounds != null && fileAspectRatio != null) {
-                            val fullTop = (containerHeight - contentHeightAtScale1) / 2f
+                        if (thumbnailBounds != null && layoutAspect != null) {
+                            val fullTop = (containerHeight - layoutContentHeight) / 2f
                             val fullCenter = Offset(
                                 x = containerWidth / 2f,
-                                y = fullTop + contentHeightAtScale1 / 2f
+                                y = fullTop + layoutContentHeight / 2f,
                             )
                             val thumbCenter = thumbnailBounds.center
                             val thumbWidth = thumbnailBounds.width
@@ -244,10 +284,10 @@ fun ImageFullscreenPreview(
                             hasPlayedOpenAnimation = true
                             isOpenAnimationPlaying = true
 
-                            val fullTop = (containerHeight - contentHeightAtScale1) / 2f
+                            val fullTop = (containerHeight - layoutContentHeight) / 2f
                             val fullCenter = Offset(
                                 x = containerWidth / 2f,
-                                y = fullTop + contentHeightAtScale1 / 2f
+                                y = fullTop + layoutContentHeight / 2f,
                             )
                             val thumbCenter = thumbnailBounds.center
                             val thumbWidth = thumbnailBounds.width
@@ -261,17 +301,24 @@ fun ImageFullscreenPreview(
                             offsetXAnim.snapTo(startOffset.x)
                             offsetYAnim.snapTo(startOffset.y)
                             cornerRadiusAnim.snapTo(12f)
-                            backgroundAlpha.snapTo(0f)
+                            backgroundAlpha.snapTo(if (hasInstantBitmap) 1f else 0f)
                             menusVisible = false
 
                             coroutineScope {
-                                launch { scaleAnim.animateTo(1f, tween(250)) }
-                                launch { offsetXAnim.animateTo(0f, tween(250)) }
-                                launch { offsetYAnim.animateTo(0f, tween(250)) }
-                                launch { cornerRadiusAnim.animateTo(0f, tween(250)) }
-                                launch { backgroundAlpha.animateTo(1f, tween(250)) }
+                                joinAll(
+                                    launch { scaleAnim.animateTo(1f, tween(280)) },
+                                    launch { offsetXAnim.animateTo(0f, tween(280)) },
+                                    launch { offsetYAnim.animateTo(0f, tween(280)) },
+                                    launch { cornerRadiusAnim.animateTo(0f, tween(280)) },
+                                    launch {
+                                        if (!hasInstantBitmap) {
+                                            backgroundAlpha.animateTo(1f, tween(280))
+                                        }
+                                    },
+                                )
                             }
-
+                            scale = 1f
+                            offset = Offset.Zero
                             isOpenAnimationPlaying = false
                             menusVisible = true
                         }
@@ -296,10 +343,10 @@ fun ImageFullscreenPreview(
                             val wasOpenAnimating = isOpenAnimationPlaying
                             isOpenAnimationPlaying = false
 
-                            val fullTop = (containerHeight - contentHeightAtScale1) / 2f
+                            val fullTop = (containerHeight - layoutContentHeight) / 2f
                             val fullCenter = Offset(
                                 x = containerWidth / 2f,
-                                y = fullTop + contentHeightAtScale1 / 2f
+                                y = fullTop + layoutContentHeight / 2f,
                             )
                             val thumbCenter = thumbnailBounds.center
                             val thumbWidth = thumbnailBounds.width
@@ -385,7 +432,7 @@ fun ImageFullscreenPreview(
 
                             val clampedScale = scale.coerceIn(1f, 10f)
                             val scaledW = containerWidth * clampedScale
-                            val scaledH = contentHeightAtScale1 * clampedScale
+                            val scaledH = layoutContentHeight * clampedScale
                             val maxOffsetX = max(0f, (scaledW - containerWidth) / 2f)
                             val maxOffsetY = max(0f, (scaledH - containerHeight) / 2f)
                             val clampedOffset = when {
@@ -420,7 +467,10 @@ fun ImageFullscreenPreview(
                         val raw = (abs(dragY) / (containerHeight * 0.75f)).coerceIn(0f, 1f)
                         raw * raw
                     } else 0f
-                    val effectiveBackgroundAlpha = (if (isInitialOpenState) 0f else backgroundAlpha.value) * (1f - positionBasedProgress)
+                    val effectiveBackgroundAlpha = (
+                        if (isInitialOpenState && !hasInstantBitmap) 0f
+                        else backgroundAlpha.value
+                    ) * (1f - positionBasedProgress)
                     SideEffect { effectiveBgAlpha = effectiveBackgroundAlpha }
 
                     val sharedElementModifier = if (sharedImageKey != null && sharedTransitionScope != null && animatedVisibilityScope != null) {
@@ -431,15 +481,18 @@ fun ImageFullscreenPreview(
                             )
                         }
                     } else Modifier
-                    val sizeModifier = if (fileAspectRatio != null) Modifier.fillMaxWidth().aspectRatio(fileAspectRatio)
-                    else Modifier.fillMaxSize()
+                    val sizeModifier = if (layoutAspect != null) {
+                        Modifier.fillMaxWidth().aspectRatio(layoutAspect)
+                    } else {
+                        Modifier.fillMaxSize()
+                    }
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
                             .then(
                                 if (isTransitioning) Modifier
                                 else Modifier.pointerInput(
-                                    containerWidth, containerHeight, contentHeightAtScale1,
+                                    containerWidth, containerHeight, layoutContentHeight,
                                     bottomInsetPx, scope
                                 ) {
                                     detectTransformGestures(
@@ -474,7 +527,7 @@ fun ImageFullscreenPreview(
                                                 centroid.y - centerY - pivotOffsetY * zoomChange
                                             )
 
-                                            val contentHeightAtNewScale = contentHeightAtScale1 * newScale
+                                            val contentHeightAtNewScale = layoutContentHeight * newScale
                                             val scaledW = containerWidth * newScale
                                             val maxOffsetX = max(0f, (scaledW - containerWidth) / 2f)
                                             val maxOffsetYRaw = max(0f, (contentHeightAtNewScale - containerHeight) / 2f)
@@ -496,7 +549,7 @@ fun ImageFullscreenPreview(
                                             }
                                             offset = Offset(newX, newY)
                                         } else {
-                                            val contentHeightAtCurrentScale = contentHeightAtScale1 * scale
+                                            val contentHeightAtCurrentScale = layoutContentHeight * scale
                                             val canScrollVertically = contentHeightAtCurrentScale > containerHeight
                                             val absDx = abs(panChange.x)
                                             val absDy = abs(panChange.y)
@@ -564,8 +617,8 @@ fun ImageFullscreenPreview(
                                 .then(sharedElementModifier)
                                 .offset { IntOffset(offsetXAnim.value.roundToInt(), offsetYAnim.value.roundToInt()) }
                         ) {
-                            AsyncImage(
-                                model = model,
+                            FullscreenBitmapImage(
+                                bitmap = displayBitmap,
                                 contentDescription = file.name,
                                 modifier = Modifier
                                     .fillMaxSize()
@@ -578,7 +631,7 @@ fun ImageFullscreenPreview(
                                         shape = androidx.compose.foundation.shape.RoundedCornerShape((cornerRadiusAnim.value / scale).dp)
                                         clip = true
                                     },
-                                contentScale = ContentScale.FillWidth
+                                contentScale = ContentScale.Fit
                             )
                         }
                     }
@@ -587,18 +640,23 @@ fun ImageFullscreenPreview(
         }
 
         // Top bar: back, display name + date/time, 3-dot menu
-        AnimatedVisibility(
-            visible = effectiveMenusVisible,
-            enter = androidx.compose.animation.fadeIn(),
-            exit = androidx.compose.animation.fadeOut(),
-            modifier = Modifier.align(Alignment.TopStart).fillMaxWidth()
+        Box(
+            modifier = Modifier
+                .align(Alignment.TopStart)
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.systemBars),
         ) {
-            Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .background(Color.Black.copy(alpha = MENU_BG_ALPHA))
-                    .windowInsetsPadding(WindowInsets.systemBars)
-                    .padding(horizontal = 8.dp, vertical = 12.dp),
+            AnimatedVisibility(
+                visible = effectiveMenusVisible,
+                enter = androidx.compose.animation.fadeIn(),
+                exit = androidx.compose.animation.fadeOut(),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.Black.copy(alpha = MENU_BG_ALPHA))
+                        .padding(horizontal = 8.dp, vertical = 12.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.SpaceBetween
             ) {
@@ -619,7 +677,7 @@ fun ImageFullscreenPreview(
                         color = Color.White
                     )
                     Text(
-                        text = formatDateTime(message.timestamp),
+                        text = formatMessageDateTimeLocal(message.timestamp),
                         style = MaterialTheme.typography.bodySmall,
                         color = Color.White.copy(alpha = 0.8f)
                     )
@@ -682,28 +740,35 @@ fun ImageFullscreenPreview(
                     }
                 }
             }
+            }
         }
 
         // Bottom: message text
-        AnimatedVisibility(
-            visible = effectiveMenusVisible && message.content.isNotBlank(),
-            enter = androidx.compose.animation.fadeIn(),
-            exit = androidx.compose.animation.fadeOut(),
-            modifier = Modifier.align(Alignment.BottomStart).fillMaxWidth()
+        Box(
+            modifier = Modifier
+                .align(Alignment.BottomStart)
+                .fillMaxWidth()
+                .windowInsetsPadding(WindowInsets.systemBars),
         ) {
-            if (message.content.isNotBlank()) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(Color.Black.copy(alpha = MENU_BG_ALPHA))
-                        .windowInsetsPadding(WindowInsets.systemBars)
-                        .padding(16.dp)
-                ) {
+            AnimatedVisibility(
+                visible = effectiveMenusVisible && message.content.isNotBlank(),
+                enter = androidx.compose.animation.fadeIn(),
+                exit = androidx.compose.animation.fadeOut(),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                if (message.content.isNotBlank()) {
+                    Box(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .background(Color.Black.copy(alpha = MENU_BG_ALPHA))
+                            .padding(16.dp),
+                    ) {
                     Text(
                         text = message.content,
                         style = MaterialTheme.typography.bodyMedium,
                         color = Color.White
                     )
+                }
                 }
             }
         }

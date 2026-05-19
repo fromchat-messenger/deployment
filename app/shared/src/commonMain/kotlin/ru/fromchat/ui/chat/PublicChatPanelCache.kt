@@ -3,6 +3,7 @@ package ru.fromchat.ui.chat
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import ru.fromchat.core.cache.CacheContext
 
 /**
  * Single retained [PublicChatPanel] for the app session (same idea as [ru.fromchat.ui.dm.DmPanelCache]).
@@ -23,6 +24,14 @@ object PublicChatPanelCache {
     private var cachedPanelKey: String? = null
     private var cachedDisplayTitle: String? = null
     private var cachedUserId: Int? = null
+    private var cachedInstanceId: String = ""
+
+    fun onActiveInstanceChanged(instanceId: String) {
+        if (cachedInstanceId.isNotEmpty() && cachedInstanceId != instanceId) {
+            clear()
+        }
+        cachedInstanceId = instanceId
+    }
 
     private fun ensureScope() {
         if (!supervisorJob.isActive) {
@@ -36,10 +45,16 @@ object PublicChatPanelCache {
      */
     fun getOrCreateGeneralChat(displayTitle: String, currentUserId: Int?): PublicChatPanel {
         ensureScope()
+        val instanceId = CacheContext.activeInstanceId.value.trim()
+        if (instanceId.isNotEmpty() && cachedInstanceId.isNotEmpty() && cachedInstanceId != instanceId) {
+            clear()
+        }
+        if (instanceId.isNotEmpty()) cachedInstanceId = instanceId
         if (
             panel != null &&
             cachedPanelKey == GeneralPublicPanelKey &&
-            cachedUserId == currentUserId
+            cachedUserId == currentUserId &&
+            (instanceId.isEmpty() || cachedInstanceId == instanceId)
         ) {
             if (cachedDisplayTitle != displayTitle) {
                 cachedDisplayTitle = displayTitle

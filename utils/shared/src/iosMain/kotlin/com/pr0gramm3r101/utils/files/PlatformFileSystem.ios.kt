@@ -19,6 +19,10 @@ internal actual fun expectExists(path: String): Boolean =
 
 @OptIn(ExperimentalForeignApi::class)
 internal actual fun expectWriteBytes(path: String, bytes: ByteArray) {
+    val parent = path.substringBeforeLast('/', missingDelimiterValue = "")
+    if (parent.isNotEmpty()) {
+        NSFileManager.defaultManager.createDirectoryAtPath(parent, true, null, null)
+    }
     val nsData = bytes.usePinned { pinned ->
         NSData.create(bytes = pinned.addressOf(0), length = bytes.size.toULong())
     }

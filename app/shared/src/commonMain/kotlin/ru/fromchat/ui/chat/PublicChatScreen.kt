@@ -5,10 +5,14 @@ import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import org.jetbrains.compose.resources.stringResource
 import ru.fromchat.Res
 import ru.fromchat.api.ApiClient
+import ru.fromchat.api.db.MessageRepository
+import ru.fromchat.core.cache.CacheContext
 import ru.fromchat.ui.isPublicChatVisible
 import ru.fromchat.*
 
@@ -26,9 +30,18 @@ fun PublicChatScreen(
         PublicChatPanelCache.getOrCreateGeneralChat(publicChatTitle, currentUserId)
     }
 
+    val activeInstanceId by CacheContext.activeInstanceId.collectAsState()
+
     LaunchedEffect(panel) {
         if (panel.getState().messages.isEmpty()) {
             panel.loadMessages()
+        }
+    }
+
+    LaunchedEffect(panel, activeInstanceId) {
+        if (activeInstanceId.isBlank()) return@LaunchedEffect
+        MessageRepository.observePublicMessages().collect { rows ->
+            panel.syncMessagesFromDatabase(rows)
         }
     }
 
