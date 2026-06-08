@@ -4,12 +4,12 @@ import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Typography
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
-import ru.fromchat.core.Settings
+import ru.fromchat.config.Settings
+import ru.fromchat.ui.components.googleSansMaterialTypography
 
 enum class Theme {
     AsSystem,
@@ -114,11 +114,9 @@ fun FromChatTheme(
         surfaceContainerHighest = surfaceContainerHighest
     )
 
-    val typography: Typography = googleSansMaterialTypography()
-
     MaterialTheme(
         colorScheme = colorScheme,
-        typography = typography,
+        typography = googleSansMaterialTypography(),
         content = content
     )
 }

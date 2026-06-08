@@ -5,6 +5,7 @@ import androidx.compose.runtime.remember
 import kotlinx.cinterop.ExperimentalForeignApi
 import platform.UIKit.UIImpactFeedbackGenerator
 import platform.UIKit.UIImpactFeedbackStyle
+import ru.fromchat.utils.haptic.HapticFeedbackEvent
 
 @Composable
 actual fun BackHandler(enabled: Boolean, onBack: () -> Unit) {

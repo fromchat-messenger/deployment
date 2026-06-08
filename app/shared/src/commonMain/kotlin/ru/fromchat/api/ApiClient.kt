@@ -1,5 +1,8 @@
 package ru.fromchat.api
 
+import com.pr0gramm3r101.utils.crypto.Base64
+import com.pr0gramm3r101.utils.currentDeviceInfo
+import com.pr0gramm3r101.utils.files.PlatformFileSystem
 import com.pr0gramm3r101.utils.settings.secureSettings
 import com.pr0gramm3r101.utils.settings.settings
 import io.ktor.client.HttpClient
@@ -12,46 +15,90 @@ import io.ktor.client.plugins.logging.LogLevel
 import io.ktor.client.plugins.logging.Logger
 import io.ktor.client.plugins.logging.Logging
 import io.ktor.client.plugins.logging.SIMPLE
-import io.ktor.client.request.header
 import io.ktor.client.plugins.websocket.WebSockets
 import io.ktor.client.plugins.websocket.pingInterval
 import io.ktor.client.request.bearerAuth
 import io.ktor.client.request.delete
 import io.ktor.client.request.get
-import io.ktor.http.HttpHeaders
-import io.ktor.http.HttpStatusCode
-import com.pr0gramm3r101.utils.files.PlatformFileSystem
-import io.ktor.client.request.patch
+import io.ktor.client.request.header
 import io.ktor.client.request.parameter
+import io.ktor.client.request.patch
 import io.ktor.client.request.post
-import io.ktor.client.request.setBody
 import io.ktor.client.request.put
+import io.ktor.client.request.setBody
 import io.ktor.client.statement.HttpResponse
 import io.ktor.http.ContentType
 import io.ktor.http.contentType
 import io.ktor.serialization.kotlinx.json.json
 import kotlinx.coroutines.MainScope
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.encodeToJsonElement
-import ru.fromchat.core.Settings
-import ru.fromchat.core.config.Config
-import ru.fromchat.core.instance.InstanceIdGuard
-import ru.fromchat.api.db.InstanceRegistryStore
-import ru.fromchat.ui.chat.PublicChatPanelCache
-import ru.fromchat.ui.dm.DmPanelCache
-import ru.fromchat.fcm.uploadPendingFcmTokenIfAvailable
+import ru.fromchat.api.ApiClient.logout
+import ru.fromchat.api.ApiClient.persistSessionToStorage
+import ru.fromchat.api.crypto.IdentityKeyManager
+import ru.fromchat.api.crypto.transport.TransportCiphertext
+import ru.fromchat.api.crypto.transport.TransportCrypto
+import ru.fromchat.api.instance.InstanceIdGuard
+import ru.fromchat.api.local.WebSocketManager
+import ru.fromchat.api.local.cache.readOutboundFileBytes
+import ru.fromchat.api.local.db.store.InstanceRegistryStore
+import ru.fromchat.api.local.db.store.ProfileCache
+import ru.fromchat.api.local.download.streamEncryptedFileToDisk
+import ru.fromchat.api.schema.calls.CallSignalingLiveKitControl
+import ru.fromchat.api.schema.calls.CallSignalingLiveKitPayload
+import ru.fromchat.api.schema.calls.LiveKitTokenRequest
+import ru.fromchat.api.schema.calls.LiveKitTokenResponse
+import ru.fromchat.api.schema.core.SimpleStatusResponse
+import ru.fromchat.api.schema.messages.MessagesResponse
+import ru.fromchat.api.schema.messages.dm.DmConversation
+import ru.fromchat.api.schema.messages.dm.DmConversationsResponse
+import ru.fromchat.api.schema.messages.dm.DmHistoryResponse
+import ru.fromchat.api.schema.messages.dm.EditDmRequest
+import ru.fromchat.api.schema.messages.dm.SendDmFile
+import ru.fromchat.api.schema.messages.dm.SendDmRequest
+import ru.fromchat.api.schema.messages.dm.upload.DmUploadChunkRequest
+import ru.fromchat.api.schema.messages.dm.upload.DmUploadChunkResponse
+import ru.fromchat.api.schema.messages.dm.upload.DmUploadCompleteResponse
+import ru.fromchat.api.schema.messages.dm.upload.DmUploadInitRequest
+import ru.fromchat.api.schema.messages.dm.upload.DmUploadInitResponse
+import ru.fromchat.api.schema.messages.dm.upload.DmUploadStatusResponse
+import ru.fromchat.api.schema.messages.publicchat.SendMessageRequest
+import ru.fromchat.api.schema.server.RegisteredUserCountResponse
+import ru.fromchat.api.schema.server.ServerInstanceIdResponse
+import ru.fromchat.api.schema.server.TransportKeyResponse
+import ru.fromchat.api.schema.user.ChangePasswordApiRequest
+import ru.fromchat.api.schema.user.FcmTokenRequest
+import ru.fromchat.api.schema.user.User
+import ru.fromchat.api.schema.user.auth.CheckAuthResponse
+import ru.fromchat.api.schema.user.auth.LoginRequest
+import ru.fromchat.api.schema.user.auth.LoginResponse
+import ru.fromchat.api.schema.user.auth.RegisterRequest
+import ru.fromchat.api.schema.user.devices.DeviceSessionInfo
+import ru.fromchat.api.schema.user.devices.DevicesListResponse
+import ru.fromchat.api.schema.user.keys.BackupBlobRequest
+import ru.fromchat.api.schema.user.keys.BackupBlobResponse
+import ru.fromchat.api.schema.user.keys.PublicKeyResponse
+import ru.fromchat.api.schema.user.profile.SimilarityResult
+import ru.fromchat.api.schema.user.profile.UserProfile
+import ru.fromchat.api.schema.user.profile.VerifyResponse
+import ru.fromchat.api.schema.websocket.WebSocketCredentials
+import ru.fromchat.api.schema.websocket.WebSocketMessage
+import ru.fromchat.api.schema.websocket.requests.WebSocketDeleteDmRequest
+import ru.fromchat.api.schema.websocket.requests.WebSocketDeleteMessageRequest
+import ru.fromchat.api.schema.websocket.requests.WebSocketEditMessageRequest
+import ru.fromchat.api.schema.websocket.requests.WebSocketSendMessageRequest
+import ru.fromchat.api.schema.websocket.types.DmTypingData
+import ru.fromchat.api.schema.websocket.types.SubscribeStatusData
+import ru.fromchat.config.ServerConfig
+import ru.fromchat.config.Settings
+import ru.fromchat.ui.chat.panels.dm.DmPanelCache
+import ru.fromchat.ui.chat.utils.PublicChatPanelCache
 import kotlin.concurrent.Volatile
 import kotlin.time.Duration.Companion.milliseconds
-import com.pr0gramm3r101.utils.crypto.Base64
-import ru.fromchat.crypto.IdentityKeyManager
-import ru.fromchat.crypto.transport.TransportCiphertext
-import ru.fromchat.crypto.transport.TransportCrypto
-import ru.fromchat.platform.currentDeviceInfo
-import ru.fromchat.fcm.unregisterFcmTokenFromServer
 
 /**
  * Creates a platform-specific HTTP client that supports WebSockets
@@ -157,7 +204,7 @@ object ApiClient {
             validateResponse { response ->
                 val instanceHeader = response.headers[InstanceIdGuard.INSTANCE_ID_HEADER]
                 runCatching {
-                    Config.serverConfig.value?.let { cfg ->
+                    ServerConfig.serverConfig.value?.let { cfg ->
                         InstanceIdGuard.onResponseHeader(instanceHeader, cfg)
                     }
                 }
@@ -244,7 +291,7 @@ object ApiClient {
 
     suspend fun refreshServerInstanceFingerprint() {
         runCatching {
-            val id = fetchServerInstanceId(Config.apiBaseUrl)
+            val id = fetchServerInstanceId(ServerConfig.apiBaseUrl)
             if (id.isNotEmpty()) {
                 Settings.lastKnownServerInstanceId = id
                 InstanceRegistryStore.registerInstanceEncountered(id)
@@ -315,14 +362,14 @@ object ApiClient {
                 }
             }
         } catch (e: Exception) {
-            ru.fromchat.core.Logger.e("ApiClient", "Error loading persisted data", e)
+            ru.fromchat.Logger.e("ApiClient", "Error loading persisted data", e)
         }
     }
 
 
     suspend fun loginRequest(request: LoginRequest): LoginResponse =
         http
-            .post("${Config.apiBaseUrl}/login") {
+            .post("${ServerConfig.apiBaseUrl}/login") {
                 contentType(ContentType.Application.Json)
                 setBody(request)
             }
@@ -330,7 +377,7 @@ object ApiClient {
 
     suspend fun registerRequest(request: RegisterRequest): LoginResponse =
         http
-            .post("${Config.apiBaseUrl}/register") {
+            .post("${ServerConfig.apiBaseUrl}/register") {
                 contentType(ContentType.Application.Json)
                 setBody(request)
             }
@@ -365,7 +412,7 @@ object ApiClient {
 
     suspend fun getMessages(limit: Int = 50, beforeId: Int? = null) =
         http
-            .get("${Config.apiBaseUrl}/get_messages") {
+            .get("${ServerConfig.apiBaseUrl}/get_messages") {
                 contentType(ContentType.Application.Json)
                 parameter("limit", limit)
                 beforeId?.let { parameter("before_id", it) }
@@ -374,28 +421,28 @@ object ApiClient {
 
     suspend fun getOwnProfile(): UserProfile =
         http
-            .get("${Config.apiBaseUrl}/user/profile") {
+            .get("${ServerConfig.apiBaseUrl}/user/profile") {
                 contentType(ContentType.Application.Json)
             }
             .body()
 
     suspend fun getProfileById(userId: Int): UserProfile =
         http
-            .get("${Config.apiBaseUrl}/user/id/$userId") {
+            .get("${ServerConfig.apiBaseUrl}/user/id/$userId") {
                 contentType(ContentType.Application.Json)
             }
             .body()
 
     suspend fun getProfileByUsername(username: String): UserProfile =
         http
-            .get("${Config.apiBaseUrl}/user/$username") {
+            .get("${ServerConfig.apiBaseUrl}/user/$username") {
                 contentType(ContentType.Application.Json)
             }
             .body()
 
     suspend fun getRegisteredUserCount(): Int =
         http
-            .get("${Config.apiBaseUrl}/user/stats/registered-count") {
+            .get("${ServerConfig.apiBaseUrl}/user/stats/registered-count") {
                 contentType(ContentType.Application.Json)
             }
             .body<RegisteredUserCountResponse>()
@@ -404,7 +451,7 @@ object ApiClient {
     suspend fun checkSimilarity(userId: Int): SimilarityResult? =
         runCatching {
             http
-                .get("${Config.apiBaseUrl}/user/check-similarity/$userId") {
+                .get("${ServerConfig.apiBaseUrl}/user/check-similarity/$userId") {
                     contentType(ContentType.Application.Json)
                 }
                 .body<SimilarityResult>()
@@ -413,7 +460,7 @@ object ApiClient {
     suspend fun verifyUser(userId: Int): VerifyResponse? =
         runCatching {
             http
-                .post("${Config.apiBaseUrl}/user/$userId/verify") {
+                .post("${ServerConfig.apiBaseUrl}/user/$userId/verify") {
                     contentType(ContentType.Application.Json)
                 }
                 .body<VerifyResponse>()
@@ -421,7 +468,7 @@ object ApiClient {
 
     suspend fun getDmConversations(): List<DmConversation> =
         http
-            .get("${Config.apiBaseUrl}/dm/conversations") {
+            .get("${ServerConfig.apiBaseUrl}/dm/conversations") {
                 contentType(ContentType.Application.Json)
             }
             .body<DmConversationsResponse>()
@@ -429,7 +476,7 @@ object ApiClient {
 
     suspend fun getDmFetch(since: Int? = null): DmHistoryResponse {
         return http
-            .get("${Config.apiBaseUrl}/dm/fetch") {
+            .get("${ServerConfig.apiBaseUrl}/dm/fetch") {
                 contentType(ContentType.Application.Json)
                 since?.let { parameter("since", it) }
             }
@@ -442,7 +489,7 @@ object ApiClient {
         beforeId: Int? = null
     ): DmHistoryResponse =
         http
-            .get("${Config.apiBaseUrl}/dm/history/$otherUserId") {
+            .get("${ServerConfig.apiBaseUrl}/dm/history/$otherUserId") {
                 contentType(ContentType.Application.Json)
                 parameter("limit", limit)
                 beforeId?.let { parameter("before_id", it) }
@@ -451,21 +498,21 @@ object ApiClient {
 
     suspend fun getOwnPublicKey(): PublicKeyResponse =
         http
-            .get("${Config.apiBaseUrl}/crypto/public-key") {
+            .get("${ServerConfig.apiBaseUrl}/crypto/public-key") {
                 contentType(ContentType.Application.Json)
             }
             .body()
 
     suspend fun getUserPublicKey(userId: Int): PublicKeyResponse =
         http
-            .get("${Config.apiBaseUrl}/crypto/public-key/of/$userId") {
+            .get("${ServerConfig.apiBaseUrl}/crypto/public-key/of/$userId") {
                 contentType(ContentType.Application.Json)
             }
             .body()
 
     suspend fun getTransportPublicKey(): TransportKeyResponse =
         http
-            .get("${Config.apiBaseUrl}/dm/key/transport/public") {
+            .get("${ServerConfig.apiBaseUrl}/dm/key/transport/public") {
                 contentType(ContentType.Application.Json)
             }
             .body()
@@ -512,7 +559,7 @@ object ApiClient {
             uploadedFileIds = uploadedFileIds
         )
 
-        http.post("${Config.apiBaseUrl}/dm/send") {
+        http.post("${ServerConfig.apiBaseUrl}/dm/send") {
             contentType(ContentType.Application.Json)
             setBody(body)
         }
@@ -524,7 +571,7 @@ object ApiClient {
         recipientId: Int,
         chunkSize: Int? = null
     ): DmUploadInitResponse =
-        http.post("${Config.apiBaseUrl}/dm/upload/init") {
+        http.post("${ServerConfig.apiBaseUrl}/dm/upload/init") {
             contentType(ContentType.Application.Json)
             setBody(
                 DmUploadInitRequest(
@@ -537,7 +584,7 @@ object ApiClient {
         }.body()
 
     suspend fun getDmUploadStatus(uploadId: String): DmUploadStatusResponse =
-        http.get("${Config.apiBaseUrl}/dm/upload/$uploadId") {
+        http.get("${ServerConfig.apiBaseUrl}/dm/upload/$uploadId") {
             contentType(ContentType.Application.Json)
         }.body()
 
@@ -546,7 +593,7 @@ object ApiClient {
         offset: Long,
         dataB64: String
     ): DmUploadChunkResponse =
-        http.patch("${Config.apiBaseUrl}/dm/upload/$uploadId") {
+        http.patch("${ServerConfig.apiBaseUrl}/dm/upload/$uploadId") {
             contentType(ContentType.Application.Json)
             setBody(
                 DmUploadChunkRequest(
@@ -557,13 +604,13 @@ object ApiClient {
         }.body()
 
     suspend fun completeDmUpload(uploadId: String): DmUploadCompleteResponse =
-        http.post("${Config.apiBaseUrl}/dm/upload/$uploadId/complete") {
+        http.post("${ServerConfig.apiBaseUrl}/dm/upload/$uploadId/complete") {
             contentType(ContentType.Application.Json)
             setBody(mapOf("upload_id" to uploadId))
         }.body()
 
     suspend fun abortDmUpload(uploadId: String) {
-        http.delete("${Config.apiBaseUrl}/dm/upload/$uploadId") {
+        http.delete("${ServerConfig.apiBaseUrl}/dm/upload/$uploadId") {
             contentType(ContentType.Application.Json)
         }
     }
@@ -575,10 +622,10 @@ object ApiClient {
     fun encryptedFileUrl(path: String): String = when {
         path.startsWith("http") -> path
         path.startsWith("/api") -> {
-            val serverBase = Config.apiBaseUrl.removeSuffix("/api")
+            val serverBase = ServerConfig.apiBaseUrl.removeSuffix("/api")
             "$serverBase$path"
         }
-        else -> "${Config.apiBaseUrl}$path"
+        else -> "${ServerConfig.apiBaseUrl}$path"
     }
 
     /** Encrypted ciphertext stored on disk after a resumable download. */
@@ -659,7 +706,7 @@ object ApiClient {
         return EncryptedFileOnDisk(outputPath, received)
     }
 
-    private fun currentDownloadUserAgent(): String? {
+    private fun currentDownloadUserAgent(): String {
         val currentDevice = currentDeviceInfo()
         return buildLoginUserAgent(
             osName = currentDevice.osName?.takeIf { it.isNotBlank() },
@@ -886,7 +933,7 @@ object ApiClient {
     private suspend fun readPartialDownloadMetaFileFromDisk(path: String): PartialDownloadMeta? {
         if (!PlatformFileSystem.exists(path)) return null
         val text = runCatching {
-            ru.fromchat.core.cache.readOutboundFileBytes("file://$path").decodeToString()
+            readOutboundFileBytes("file://$path").decodeToString()
         }.getOrNull() ?: return null
         return parsePartialDownloadMeta(text)
     }
@@ -946,7 +993,7 @@ object ApiClient {
         val path = pausedDownloadIndexPath() ?: return emptySet()
         if (!PlatformFileSystem.exists(path)) return emptySet()
         return runCatching {
-            ru.fromchat.core.cache.readOutboundFileBytes("file://$path")
+            readOutboundFileBytes("file://$path")
                 .decodeToString()
                 .lineSequence()
                 .map { it.trim() }
@@ -1027,7 +1074,7 @@ object ApiClient {
             recipientPublicKeyB64 = recipientPublicKey
         )
 
-        http.put("${Config.apiBaseUrl}/dm/edit/$messageId") {
+        http.put("${ServerConfig.apiBaseUrl}/dm/edit/$messageId") {
             contentType(ContentType.Application.Json)
             setBody(body)
         }
@@ -1035,20 +1082,20 @@ object ApiClient {
 
     suspend fun fetchBackupBlob(): String? {
         return try {
-            val response = http.get("${Config.apiBaseUrl}/crypto/backup") {
+            val response = http.get("${ServerConfig.apiBaseUrl}/crypto/backup") {
                 contentType(ContentType.Application.Json)
             }
             val backupResponse = response.body<BackupBlobResponse>()
             backupResponse.blob
         } catch (e: Exception) {
-            ru.fromchat.core.Logger.d("ApiClient", "No backup found or error fetching: ${e.message}")
+            ru.fromchat.Logger.d("ApiClient", "No backup found or error fetching: ${e.message}")
             null
         }
     }
 
     suspend fun uploadBackupBlob(blobJson: String) {
         val payload = BackupBlobRequest(blob = blobJson)
-        http.post("${Config.apiBaseUrl}/crypto/backup") {
+        http.post("${ServerConfig.apiBaseUrl}/crypto/backup") {
             contentType(ContentType.Application.Json)
             setBody(payload)
         }
@@ -1058,7 +1105,7 @@ object ApiClient {
     suspend fun validateToken(): Boolean {
         try {
             http
-                .get("${Config.apiBaseUrl}/api/user/profile")
+                .get("${ServerConfig.apiBaseUrl}/api/user/profile")
             return true // Token is valid if no exception thrown
         } catch (e: ClientRequestException) {
             if (e.response.status.value == 401 || e.response.status.value == 403) {
@@ -1073,27 +1120,27 @@ object ApiClient {
 
     suspend fun listDevices(): List<DeviceSessionInfo> =
         http
-            .get("${Config.apiBaseUrl}/devices") {
+            .get("${ServerConfig.apiBaseUrl}/devices") {
                 contentType(ContentType.Application.Json)
             }
             .body<DevicesListResponse>()
             .devices
 
     suspend fun revokeDeviceSession(sessionId: String) {
-        http.delete("${Config.apiBaseUrl}/devices/$sessionId") {
+        http.delete("${ServerConfig.apiBaseUrl}/devices/$sessionId") {
             contentType(ContentType.Application.Json)
         }
     }
 
     suspend fun revokeAllOtherDeviceSessions() {
-        http.post("${Config.apiBaseUrl}/devices/logout-all") {
+        http.post("${ServerConfig.apiBaseUrl}/devices/logout-all") {
             contentType(ContentType.Application.Json)
         }
     }
 
     suspend fun registerFcmToken(token: String): SimpleStatusResponse {
         return http
-            .post("${Config.apiBaseUrl}/push/register") {
+            .post("${ServerConfig.apiBaseUrl}/push/register") {
                 contentType(ContentType.Application.Json)
                 setBody(FcmTokenRequest(token = token))
             }
@@ -1103,13 +1150,13 @@ object ApiClient {
     suspend fun unregisterFcmToken(token: String? = null): SimpleStatusResponse {
         return if (token.isNullOrBlank()) {
             http
-                .post("${Config.apiBaseUrl}/push/unregister") {
+                .post("${ServerConfig.apiBaseUrl}/push/unregister") {
                     contentType(ContentType.Application.Json)
                 }
                 .body()
         } else {
             http
-                .post("${Config.apiBaseUrl}/push/unregister") {
+                .post("${ServerConfig.apiBaseUrl}/push/unregister") {
                     contentType(ContentType.Application.Json)
                     setBody(FcmTokenRequest(token = token))
                 }
@@ -1122,7 +1169,7 @@ object ApiClient {
         newPasswordDerived: String,
         logoutAllExceptCurrent: Boolean
     ) {
-        http.post("${Config.apiBaseUrl}/change-password") {
+        http.post("${ServerConfig.apiBaseUrl}/change-password") {
             contentType(ContentType.Application.Json)
             setBody(
                 ChangePasswordApiRequest(
@@ -1140,14 +1187,14 @@ object ApiClient {
     suspend fun deleteAccount(): SimpleStatusResponse {
         try {
             return http
-                .post("${Config.apiBaseUrl}/account/delete") {
+                .post("${ServerConfig.apiBaseUrl}/account/delete") {
                     contentType(ContentType.Application.Json)
                 }
                 .body()
         } catch (e: ClientRequestException) {
             if (e.response.status.value != 404) throw e
             return http
-                .post("${Config.apiBaseUrl}/delete") {
+                .post("${ServerConfig.apiBaseUrl}/delete") {
                     contentType(ContentType.Application.Json)
                 }
                 .body()
@@ -1177,7 +1224,7 @@ object ApiClient {
     }
 
     suspend fun logout() {
-        runCatching { http.get("${Config.apiBaseUrl}/logout") }
+        runCatching { http.get("${ServerConfig.apiBaseUrl}/logout") }
         runCatching { unregisterFcmTokenFromServer() }
         clearLocalSession()
     }
@@ -1186,7 +1233,7 @@ object ApiClient {
 
     suspend fun sendMessageViaHttp(content: String, replyToId: Int? = null) {
         if (_suspensionState.value.isSuspended) return
-        http.post("${Config.apiBaseUrl}/send_message") {
+        http.post("${ServerConfig.apiBaseUrl}/send_message") {
             contentType(ContentType.Application.Json)
             setBody(SendMessageRequest(content = content, reply_to_id = replyToId))
         }
@@ -1366,7 +1413,7 @@ object ApiClient {
             throw IllegalStateException("Suspended")
         }
         return http
-            .post("${Config.apiBaseUrl}/livekit/token") {
+            .post("${ServerConfig.apiBaseUrl}/livekit/token") {
                 contentType(ContentType.Application.Json)
                 setBody(LiveKitTokenRequest(peerUserId = peerUserId, roomName = roomName))
             }

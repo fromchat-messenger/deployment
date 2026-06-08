@@ -1,13 +1,20 @@
 package ru.fromchat.api
 
 import com.pr0gramm3r101.utils.settings.settings
+import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import ru.fromchat.core.Logger
+import ru.fromchat.Logger
+import ru.fromchat.api.local.WebSocketManager
+import ru.fromchat.api.local.db.store.ConnectionStateStore
+import ru.fromchat.api.schema.websocket.WebSocketCredentials
+import ru.fromchat.api.schema.websocket.WebSocketMessage
+import ru.fromchat.api.schema.websocket.requests.GetUpdatesRequest
+import ru.fromchat.api.schema.websocket.requests.GetUpdatesResponse
 import kotlin.concurrent.Volatile
 
 /**
@@ -35,6 +42,7 @@ object UpdateSyncManager {
         ConnectionStateStore.updateSeqAndMissed(lastSeq = stored, missedCount = null)
     }
 
+    @OptIn(DelicateCoroutinesApi::class)
     fun onUpdatesBatch(seq: Int) {
         if (seq <= 0) return
         val currentUserId = ApiClient.user?.id ?: return

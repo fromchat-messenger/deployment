@@ -12,7 +12,7 @@ kotlin {
 
     android {
         namespace = "com.pr0gramm3r101.utils"
-        compileSdk = 36
+        compileSdk = 37
         minSdk = 24
     }
 
@@ -39,6 +39,12 @@ kotlin {
             implementation(libs.jetbrains.kotlinx.coroutines.core)
             implementation(libs.navigation.compose)
             implementation(libs.kotlinx.serialization.json)
+            implementation(libs.ktor.client.core)
+            implementation(libs.ktor.client.cio)
+            implementation(libs.ktor.client.content.negotiation)
+            implementation(libs.ktor.client.serialization.kotlinx.json)
+            implementation(libs.ktor.client.websockets)
+            implementation(libs.ktor.client.logging)
         }
 
         androidMain.dependencies {
@@ -52,10 +58,7 @@ kotlin {
         }
 
         iosMain.dependencies {
-            implementation(libs.ktor.client.core)
             implementation(libs.ktor.client.darwin)
-            implementation(libs.ktor.client.content.negotiation)
-            implementation(libs.ktor.client.serialization.kotlinx.json)
             implementation(libs.kotlinx.datetime)
             implementation(libs.multiplatform.settings)
             implementation(libs.multiplatform.settings.coroutines)

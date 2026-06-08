@@ -43,6 +43,7 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import com.pr0gramm3r101.utils.supportClipboardManagerImpl
 import dev.chrisbanes.haze.HazeProgressive
 import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.hazeSource
@@ -58,38 +59,54 @@ import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import org.jetbrains.compose.resources.stringResource
+import ru.fromchat.Logger
 import ru.fromchat.Res
 import ru.fromchat.api.ApiClient
-import ru.fromchat.api.AttachmentUploadNotifier
-import ru.fromchat.api.AttachmentUploadProgress
-import ru.fromchat.api.generateClientMessageId
-import ru.fromchat.api.nowMessageTimestampIso
-import ru.fromchat.api.optimisticMessageIdForClientMessageId
-import ru.fromchat.api.outbox.OutgoingMessageCoordinator
-import com.pr0gramm3r101.utils.supportClipboardManagerImpl
-import ru.fromchat.api.ConnectionStateStore
-import ru.fromchat.api.ConnectionStatus
-import ru.fromchat.api.Message
-import ru.fromchat.api.ProfileCache
-import ru.fromchat.api.UserStatusStore
-import ru.fromchat.api.WebSocketManager
-import ru.fromchat.api.WebSocketMessage
-import ru.fromchat.api.WebSocketUpdatesData
+import ru.fromchat.api.calls.CallStore
+import ru.fromchat.api.local.WebSocketManager
+import ru.fromchat.api.local.db.store.ConnectionStateStore
+import ru.fromchat.api.local.db.store.ConnectionStatus
+import ru.fromchat.api.local.db.store.ProfileCache
+import ru.fromchat.api.local.db.store.UserStatusStore
+import ru.fromchat.api.local.download.SavableMessageImage
+import ru.fromchat.api.local.download.ensureFileDownloadedForSave
+import ru.fromchat.api.local.download.isMessageImageFullyLoaded
+import ru.fromchat.api.local.download.mimeTypeForImageFilename
+import ru.fromchat.api.local.download.rememberSaveMessageFile
+import ru.fromchat.api.local.download.rememberSaveMessageImage
+import ru.fromchat.api.local.download.resolveImageSourceUri
+import ru.fromchat.api.local.download.resolveSavableMessageFile
+import ru.fromchat.api.local.download.resolveSavableMessageImage
+import ru.fromchat.api.local.messages.generateClientMessageId
+import ru.fromchat.api.local.messages.nowMessageTimestampIso
+import ru.fromchat.api.local.messages.optimisticMessageIdForClientMessageId
+import ru.fromchat.api.local.send.OutgoingMessageCoordinator
+import ru.fromchat.api.local.send.prepareOutboundFileForSend
+import ru.fromchat.api.local.send.prepareOutboundImageForSend
+import ru.fromchat.api.local.workers.AttachmentUploadNotifier
+import ru.fromchat.api.local.workers.AttachmentUploadProgress
+import ru.fromchat.api.schema.messages.Message
+import ru.fromchat.api.schema.websocket.WebSocketMessage
+import ru.fromchat.api.schema.websocket.types.WebSocketUpdatesData
 import ru.fromchat.back
-import ru.fromchat.calls.CallStore
 import ru.fromchat.cd_call
 import ru.fromchat.chat_group_label
-import ru.fromchat.core.Logger
-import ru.fromchat.net.NetworkConnectivity
 import ru.fromchat.status_connecting
 import ru.fromchat.status_updating
-import ru.fromchat.ui.HapticFeedbackEvent
 import ru.fromchat.ui.LocalNavController
-import ru.fromchat.ui.rememberHapticFeedback
-import ru.fromchat.ui.suspension.SuspendedAccountSupportSheet
+import ru.fromchat.ui.chat.panels.publicchat.publicChatProfileSharedAvatarKey
+import ru.fromchat.ui.chat.utils.AttachmentDownloadVisibility
+import ru.fromchat.ui.chat.utils.getImageAspectRatio
+import ru.fromchat.ui.chat.utils.getImageDimensions
+import ru.fromchat.ui.chat.utils.imageAttachmentKey
+import ru.fromchat.ui.chat.utils.visibleMessageIdsInChatList
+import ru.fromchat.ui.components.SuspendedAccountSupportSheet
+import ru.fromchat.utils.NetworkConnectivity
 import ru.fromchat.utils.formatLastSeen
+import ru.fromchat.utils.haptic.HapticFeedbackEvent
+import ru.fromchat.utils.haptic.rememberHapticFeedback
 import ru.fromchat.utils.rememberLastSeenFormatStrings
-import kotlin.time.Clock
+import kotlin.time.Duration.Companion.milliseconds
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalHazeMaterialsApi::class)
 @Composable
@@ -137,7 +154,6 @@ fun ChatScreen(
     val hazeState = rememberHazeState(
         blurEnabled = !(panelState.isLoading && panelState.messages.isEmpty())
     )
-    val chatBottomHazeStyle = rememberChatSurfaceContainerHazeStyle()
 
     val currentTypingUsers = panelState.typingUsers // Directly use from panelState
     val statusMap by UserStatusStore.status.collectAsState()
@@ -386,9 +402,9 @@ fun ChatScreen(
         val isNearBottom = minVisibleIndex <= 2
         if (lastIsOurs || isNearBottom) {
             if (listState.layoutInfo.visibleItemsInfo.isNotEmpty()) {
-                delay(100)
+                delay(100.milliseconds)
                 listState.animateScrollToItem(0)
-                delay(150)
+                delay(150.milliseconds)
                 listState.animateScrollToItem(0)
             }
         }
@@ -428,21 +444,23 @@ fun ChatScreen(
                         panel.updateMessageByClientMessageId(progress.jobId) {
                             it.copy(uploadProgress = 0, uploadError = null)
                         }
+
                     is AttachmentUploadProgress.InProgress ->
                         panel.updateMessageByClientMessageId(progress.jobId) {
                             it.copy(uploadProgress = progress.percent, uploadError = null)
                         }
+
                     is AttachmentUploadProgress.Success ->
                         panel.updateMessageByClientMessageId(progress.jobId) {
                             it.copy(uploadProgress = null)
                         }
+
                     is AttachmentUploadProgress.Failed -> {
                         if (progress.error == "Cancelled") return@collect
                         panel.updateMessageByClientMessageId(progress.jobId) {
                             it.copy(uploadProgress = null, uploadError = progress.error)
                         }
                     }
-                    else -> Unit
                 }
             }
         }
@@ -709,8 +727,8 @@ fun ChatScreen(
                                         panel.updateMessageByClientMessageId(cid) {
                                             it.copy(uploadError = null, uploadProgress = 0)
                                         }
-                                        ru.fromchat.api.outbox.OutgoingMessageCoordinator
-                                            .retryDmAttachmentUpload(cid)
+
+                                        OutgoingMessageCoordinator.retryDmAttachmentUpload(cid)
                                     }
                                 },
                                 sharedAvatarNavKey =
@@ -735,7 +753,7 @@ fun ChatScreen(
                         item { Spacer(Modifier.height(floatingHeaderClearance)) }
                         }
 
-                        ChatFloatingHeaderBox(
+                        ChatTopBar(
                             hazeState = hazeState,
                             onBack = { navController.navigateUp() },
                             backContentDescription = stringResource(Res.string.back),
@@ -748,7 +766,7 @@ fun ChatScreen(
                             },
                             callContentDescription = cdCall,
                             titleChrome = {
-                                ChatFloatingTitleChrome(
+                                ChatTopBarInner(
                                     title = panelState.title,
                                     titleAvatar = panelState.titleAvatar,
                                     profileUserId = profileUserId,

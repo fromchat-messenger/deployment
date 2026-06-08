@@ -213,12 +213,11 @@
 
     <string name="settings_notifications_title">Уведомления</string>
     <string name="settings_notifications_body">Чтобы разрешить или отключить уведомления FromChat, откройте настройки уведомлений телефона.</string>
-    <string name="settings_open_notification_settings">Открыть настройки уведомлений</string>
-    <string name="settings_notifications_enable">Включить push-уведомления</string>
-    <string name="settings_notifications_disable">Отключить push-уведомления</string>
+    <string name="settings_notification_settings">Настройки уведомлений</string>
+    <string name="settings_notification_settings_d">Здесь вы можете включить или выключить типы уведомлений, изменить звук и т.д.</string>
     <string name="settings_notifications_permission_required">Откройте системные настройки и разрешите уведомления.</string>
-    <string name="settings_push_notifications_enabled">Push-уведомления включены</string>
-    <string name="settings_push_notifications_disabled">Push-уведомления отключены</string>
+    <string name="settings_push_notifications">Push-уведомления</string>
+    <string name="settings_push_notifications_d">Они помогут вам узнать, если появилось новое сообщение пока приложение закрыто.</string>
 
     <string name="settings_devices_title">Устройства</string>
     <string name="settings_devices_empty">Нет активных сессий</string>
@@ -245,6 +244,8 @@
     <string name="settings_devices_logout_all">Выйти на всех других устройствах</string>
     <string name="settings_devices_logout_all_confirm_title">Выйти везде, кроме этого?</string>
     <string name="settings_devices_logout_all_confirm_body">Вы останетесь в аккаунте только на этом устройстве.</string>
+    <string name="settings_devices_active_sessions">Активные сеансы</string>
+
     <string name="confirm">Подтвердить</string>
     <string name="cancel">Отмена</string>
 
@@ -281,6 +282,7 @@
     <string name="typing_many">%1$s, %2$s и ещё %3$d печатают…</string>
     <string name="more">Ещё</string>
     <string name="unread_count">+%1$d</string>
+    <string name="unknown">Неизвестно</string>
 
     <!-- Удаления доступа -->
     <string name="suspend_chat_banner_message">Ваш аккаунт был заблокирован</string>

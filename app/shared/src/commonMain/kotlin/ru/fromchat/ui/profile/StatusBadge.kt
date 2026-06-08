@@ -14,16 +14,15 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.jetbrains.compose.resources.stringResource
 import ru.fromchat.Res
-import ru.fromchat.*
 import ru.fromchat.api.ApiClient
+import ru.fromchat.cd_similar_verified
+import ru.fromchat.cd_verified_account
 
 @Composable
 fun StatusBadge(
@@ -32,42 +31,35 @@ fun StatusBadge(
     modifier: Modifier = Modifier,
     size: Dp = 20.dp
 ) {
-    var isSimilarToVerified by remember(userId, verified) { mutableStateOf(false) }
-    val cdVerified = stringResource(Res.string.cd_verified_account)
-    val cdSimilar = stringResource(Res.string.cd_similar_verified)
+    var isSimilarToVerified by remember(userId, verified) {
+        mutableStateOf(false)
+    }
 
     LaunchedEffect(verified, userId, ApiClient.token) {
-        if (verified == true) {
-            isSimilarToVerified = false
-            return@LaunchedEffect
-        }
-        if (userId == null || ApiClient.token == null) {
-            isSimilarToVerified = false
-            return@LaunchedEffect
-        }
-        val result = withContext(Dispatchers.Default) {
-            runCatching { ApiClient.checkSimilarity(userId) }.getOrNull()
-        }
-        isSimilarToVerified = result?.isSimilar == true
+        isSimilarToVerified = !(
+            verified == true ||
+            userId == null ||
+            ApiClient.token == null
+        ) && withContext(Dispatchers.Default) {
+            runCatching {
+                ApiClient.checkSimilarity(userId)
+            }.getOrNull()
+        }?.isSimilar == true
     }
 
     when {
         verified == true -> Icon(
             imageVector = Icons.Filled.Verified,
-            contentDescription = cdVerified,
-            modifier = modifier
-                .size(size)
-                .semantics { contentDescription = cdVerified },
+            contentDescription = stringResource(Res.string.cd_verified_account),
+            modifier = modifier.size(size),
             tint = MaterialTheme.colorScheme.primary
         )
+
         isSimilarToVerified -> Icon(
             imageVector = Icons.Filled.Warning,
-            contentDescription = cdSimilar,
-            modifier = modifier
-                .size(size)
-                .semantics { contentDescription = cdSimilar },
+            contentDescription = stringResource(Res.string.cd_similar_verified),
+            modifier = modifier.size(size),
             tint = Color(0xFFFFA000)
         )
-        else -> {}
     }
 }

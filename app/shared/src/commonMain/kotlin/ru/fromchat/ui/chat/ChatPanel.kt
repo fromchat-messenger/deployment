@@ -9,15 +9,20 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.serialization.Serializable
 import ru.fromchat.api.ApiClient
-import ru.fromchat.api.Message
-import ru.fromchat.api.generateClientMessageId
-import ru.fromchat.api.nowMessageTimestampIso
-import ru.fromchat.api.sortMessagesForChatDisplay
-import ru.fromchat.api.WebSocketMessage
-import ru.fromchat.core.Logger
-import ru.fromchat.ui.chat.dedupeMessagesByClientId
-import ru.fromchat.ui.chat.dropSupersededOptimisticMessages
-import kotlin.time.Clock
+import ru.fromchat.api.local.messages.generateClientMessageId
+import ru.fromchat.api.local.messages.nowMessageTimestampIso
+import ru.fromchat.api.local.messages.sortMessagesForChatDisplay
+import ru.fromchat.api.local.send.OutgoingMessageCoordinator
+import ru.fromchat.api.schema.messages.Message
+import ru.fromchat.api.schema.websocket.WebSocketMessage
+import ru.fromchat.Logger
+import ru.fromchat.api.local.send.clearOutboundFileCaches
+import ru.fromchat.api.local.send.clearOutboundImageCaches
+import ru.fromchat.ui.chat.utils.TypingHandler
+import ru.fromchat.ui.chat.utils.TypingUser
+import ru.fromchat.ui.chat.utils.dedupeMessagesByClientId
+import ru.fromchat.ui.chat.utils.dropSupersededOptimisticMessages
+import ru.fromchat.ui.chat.utils.mergeDatabaseMessagesWithPanelState
 import kotlin.time.ExperimentalTime
 
 /**
@@ -238,7 +243,7 @@ abstract class ChatPanel(
             clearOutboundFileCaches(cid, message.id)
         }
         removeMessage(message.id)
-        ru.fromchat.api.outbox.OutgoingMessageCoordinator.cancelOutboundMessage(cid, outboxConversationId())
+        OutgoingMessageCoordinator.cancelOutboundMessage(cid, outboxConversationId())
     }
 
     suspend fun cancelQueuedMessageByClientId(clientMessageId: String) {

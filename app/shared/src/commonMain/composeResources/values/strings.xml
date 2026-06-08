@@ -181,9 +181,7 @@
     <string name="server_ip_label">Server IP or hostname</string>
     <string name="server_ip_hint">192.168.1.10</string>
     <string name="api_port_label">Port</string>
-    <string name="api_port_hint"></string>
     <string name="calls_port_label">Calls port</string>
-    <string name="calls_port_hint"></string>
     <string name="https_enabled">Secure connection</string>
     <string name="server_config_https_hint">Uses HTTPS. Turn off only for plain HTTP.</string>
     <string name="server_config_https_headline">HTTPS</string>
@@ -243,13 +241,11 @@
     <string name="settings_category_account_d">Log out or delete account</string>
 
     <string name="settings_notifications_title">Notifications</string>
-    <string name="settings_notifications_body">To allow or block alerts from FromChat, use your phone’s notification settings.</string>
-    <string name="settings_open_notification_settings">Open notification settings</string>
-    <string name="settings_notifications_enable">Enable push notifications</string>
-    <string name="settings_notifications_disable">Disable push notifications</string>
+    <string name="settings_notification_settings">Notification settings</string>
+    <string name="settings_notification_settings_d">Here you can enable or disable certain types of notifications, change the sound and more.</string>
     <string name="settings_notifications_permission_required">Open system notification settings to allow alerts.</string>
-    <string name="settings_push_notifications_enabled">Push notifications enabled</string>
-    <string name="settings_push_notifications_disabled">Push notifications disabled</string>
+    <string name="settings_push_notifications">Push notifications</string>
+    <string name="settings_push_notifications_d">These will let you know if you got a new message when the app is closed.</string>
 
     <string name="settings_devices_title">Devices</string>
     <string name="settings_devices_empty">No active sessions</string>
@@ -276,6 +272,7 @@
     <string name="settings_devices_logout_all">Sign out all other devices</string>
     <string name="settings_devices_logout_all_confirm_title">Sign out everywhere else?</string>
     <string name="settings_devices_logout_all_confirm_body">You stay signed in on this device only.</string>
+    <string name="settings_devices_active_sessions">Active sessions</string>
     <string name="confirm">Confirm</string>
     <string name="cancel">Cancel</string>
 
@@ -308,6 +305,7 @@
     <string name="error_invalid_credentials">Wrong username or password</string>
     <string name="error_connection">Couldn’t connect. Check your internet.</string>
     <string name="error_unknown">Something went wrong. Please try again.</string>
+    <string name="unknown">Unknown</string>
 
     <!-- Typing Indicators -->
     <string name="typing_single">%1$s is typing…</string>

@@ -56,7 +56,7 @@
         </receiver>
 
         <provider
-            android:name="ru.fromchat.core.files.AttachmentFileProvider"
+            android:name="ru.fromchat.api.local.cache.AttachmentFileProvider"
             android:authorities="${applicationId}.attachment_files"
             android:exported="false"
             android:grantUriPermissions="true">

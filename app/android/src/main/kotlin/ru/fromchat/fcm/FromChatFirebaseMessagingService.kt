@@ -10,7 +10,7 @@ import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
 import ru.fromchat.api.ApiClient
 import ru.fromchat.notifications.NotificationHelper
-import ru.fromchat.fcm.uploadPendingFcmTokenIfAvailable
+import ru.fromchat.api.uploadPendingFcmTokenIfAvailable
 
 @OptIn(DelicateCoroutinesApi::class)
 class FromChatFirebaseMessagingService : FirebaseMessagingService() {

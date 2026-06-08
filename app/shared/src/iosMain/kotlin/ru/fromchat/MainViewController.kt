@@ -1,9 +1,10 @@
+@file:Suppress("unused")
+
 package ru.fromchat
 
 import androidx.compose.ui.window.ComposeUIViewController
 import ru.fromchat.ui.App
 
-@Suppress("unused")
 fun MainViewController(
     startAtProfileUserId: Int?,
     startAtProfileUsername: String?

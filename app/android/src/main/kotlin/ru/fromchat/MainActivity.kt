@@ -13,7 +13,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
-import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
 import com.google.android.gms.common.ConnectionResult
 import com.google.android.gms.common.GoogleApiAvailability
 import io.ktor.client.call.body
@@ -25,13 +25,11 @@ import io.ktor.http.contentType
 import kotlinx.coroutines.DelicateCoroutinesApi
 import kotlinx.coroutines.GlobalScope
 import kotlinx.coroutines.launch
-import androidx.lifecycle.lifecycleScope
 import ru.fromchat.api.ApiClient
-import ru.fromchat.api.MessagesResponse
-import ru.fromchat.core.config.Config
-import ru.fromchat.core.Logger
+import ru.fromchat.api.schema.messages.MessagesResponse
+import ru.fromchat.config.ServerConfig
 import ru.fromchat.ui.App
-import ru.fromchat.ui.isPublicChatVisible
+import ru.fromchat.ui.chat.panels.publicchat.isPublicChatVisible
 
 private const val EXTRA_NOTIFICATION_CHAT_TYPE = "notification_chat_type"
 private const val EXTRA_OPEN_DM_USER_ID = "open_dm_user_id"
@@ -172,13 +170,13 @@ class MainActivity : ComponentActivity() {
             try {
                 // Get all unread messages and mark them as read
                 val messageIds = ApiClient.http
-                    .get("${Config.apiBaseUrl}/messages/new")
+                    .get("${ServerConfig.apiBaseUrl}/messages/new")
                     .body<MessagesResponse>()
                     .messages
                     .map { it.id }
 
                 if (messageIds.isNotEmpty()) {
-                    ApiClient.http.post("${Config.apiBaseUrl}/messages/read") {
+                    ApiClient.http.post("${ServerConfig.apiBaseUrl}/messages/read") {
                         contentType(ContentType.Application.Json)
                         setBody(mapOf("messageIds" to messageIds))
                     }

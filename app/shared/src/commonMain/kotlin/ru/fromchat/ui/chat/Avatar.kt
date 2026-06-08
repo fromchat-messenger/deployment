@@ -1,7 +1,6 @@
 package ru.fromchat.ui.chat
 
 import androidx.compose.foundation.Canvas
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.shape.CircleShape
@@ -20,10 +19,11 @@ import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.rememberTextMeasurer
 import androidx.compose.ui.text.drawText
-import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
-import ru.fromchat.core.config.Config
+import ru.fromchat.config.ServerConfig
+import ru.fromchat.ui.chat.components.generateGradientFromName
+import ru.fromchat.ui.chat.components.getInitials
 
 @Composable
 fun Avatar(
@@ -46,7 +46,7 @@ fun Avatar(
             val fullUrl = if (profilePictureUrl.startsWith("http")) {
                 profilePictureUrl
             } else {
-                "${Config.apiBaseUrl}$profilePictureUrl"
+                "${ServerConfig.apiBaseUrl}$profilePictureUrl"
             }
 
             AsyncImage(

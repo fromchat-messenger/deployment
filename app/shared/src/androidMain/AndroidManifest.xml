@@ -9,15 +9,15 @@
 
     <application>
         <service
-            android:name="ru.fromchat.calls.CallForegroundService"
+            android:name="ru.fromchat.ui.calls.CallForegroundService"
             android:exported="false"
             android:foregroundServiceType="camera|microphone" />
         <service
-            android:name="ru.fromchat.download.AttachmentDownloadForegroundService"
+            android:name="ru.fromchat.api.local.workers.AttachmentDownloadForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
         <service
-            android:name="ru.fromchat.download.AttachmentFileCopyForegroundService"
+            android:name="ru.fromchat.api.local.workers.AttachmentFileCopyForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
         <service

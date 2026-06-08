@@ -168,3 +168,14 @@ inline fun <T> T.require( message: String, condition: (T) -> Boolean): T {
     require(condition(this)) { message }
     return this
 }
+
+data class CurrentDeviceInfo(
+    val osName: String? = null,
+    val osVersion: String? = null,
+    val deviceType: String? = null,
+    val deviceName: String? = null,
+    val brand: String? = null,
+    val model: String? = null
+)
+
+expect fun currentDeviceInfo(): CurrentDeviceInfo

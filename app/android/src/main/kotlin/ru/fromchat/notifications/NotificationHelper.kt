@@ -27,14 +27,15 @@ import kotlinx.coroutines.launch
 import ru.fromchat.MainActivity
 import ru.fromchat.R
 import ru.fromchat.api.ApiClient
-import ru.fromchat.api.DmHistoryResponse
-import ru.fromchat.api.Message
-import ru.fromchat.api.MessagesResponse
-import ru.fromchat.core.config.Config
-import ru.fromchat.crypto.CorruptedDmMessagePlaceholder
-import ru.fromchat.crypto.DmCiphertextCorruptedException
-import ru.fromchat.crypto.decryptEnvelope
-import ru.fromchat.ui.isPublicChatVisible
+import ru.fromchat.api.schema.messages.Message
+import ru.fromchat.api.schema.messages.MessagesResponse
+import ru.fromchat.api.schema.messages.dm.DmHistoryResponse
+import ru.fromchat.config.ServerConfig
+import ru.fromchat.api.crypto.CorruptedDmMessagePlaceholder
+import ru.fromchat.api.crypto.DmCiphertextCorruptedException
+import ru.fromchat.api.crypto.decryptEnvelope
+import ru.fromchat.ui.chat.panels.publicchat.isPublicChatVisible
+import kotlin.time.Instant
 
 object NotificationHelper {
     private const val EXTRA_NOTIFICATION_CHAT_TYPE = "notification_chat_type"
@@ -141,7 +142,7 @@ object NotificationHelper {
             }
 
             val messages = ApiClient.http
-                .get("${Config.apiBaseUrl}/messages/new")
+                .get("${ServerConfig.apiBaseUrl}/messages/new")
                 .body<MessagesResponse>()
                 .messages
             Log.d("NotificationHelper", "fetchAndNotify: fetched ${messages.size} public messages")
@@ -164,7 +165,7 @@ object NotificationHelper {
                     Log.w("NotificationHelper", "fetchAndNotify: received 401; reloading token and retrying")
                     ApiClient.loadPersistedData()
                     val retryMessages = ApiClient.http
-                        .get("${Config.apiBaseUrl}/messages/new")
+                        .get("${ServerConfig.apiBaseUrl}/messages/new")
                         .body<MessagesResponse>()
                         .messages
                     Log.d(
@@ -470,7 +471,7 @@ object NotificationHelper {
                                 ).setConversationTitle("Public Chat").let {
                                     for (msg in messages.takeLast(10)) {
                                         val timestamp = try {
-                                            java.time.Instant.parse(msg.timestamp).toEpochMilli()
+                                            Instant.parse(msg.timestamp).toEpochMilliseconds()
                                         } catch (_: Exception) {
                                             System.currentTimeMillis()
                                         }

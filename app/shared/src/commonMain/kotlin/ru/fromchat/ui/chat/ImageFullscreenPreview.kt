@@ -15,15 +15,14 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.WindowInsets
-import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.safeDrawing
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.systemBars
-import androidx.compose.foundation.layout.systemGestures
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.material.icons.Icons
@@ -37,7 +36,6 @@ import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -53,33 +51,44 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import com.pr0gramm3r101.utils.LocalSystemBarsVisibility
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.withContext
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.joinAll
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.jetbrains.compose.resources.stringResource
 import ru.fromchat.Res
-import ru.fromchat.api.Message
-import ru.fromchat.api.formatMessageDateTimeLocal
-import ru.fromchat.*
-import ru.fromchat.ui.BackHandler
-import ru.fromchat.ui.LocalSystemBarsVisibility
+import ru.fromchat.action_delete
+import ru.fromchat.action_reply
+import ru.fromchat.action_save
+import ru.fromchat.api.local.cache.DecryptedImageCache
+import ru.fromchat.api.local.download.ChatPreviewDecodeSize
+import ru.fromchat.api.local.download.LocalDecodedImageCache
+import ru.fromchat.api.local.download.isMessageImageFullyLoaded
+import ru.fromchat.api.local.messages.formatMessageDateTimeLocal
+import ru.fromchat.api.schema.messages.Message
+import ru.fromchat.back
+import ru.fromchat.more
+import ru.fromchat.ui.chat.utils.imageAspectRatioForMessage
+import ru.fromchat.ui.components.BackHandler
+import ru.fromchat.ui.components.Text
 import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 import kotlin.math.roundToInt
-private val MENU_BG_ALPHA = 0.5f
+
+private const val MENU_BG_ALPHA = 0.5f
 
 private data class InitialTransform(
     val scale: Float,
@@ -113,7 +122,6 @@ fun ImageFullscreenPreview(
     val labelDelete = stringResource(Res.string.action_delete)
     val headerName = messageDisplayUsername(message, currentUserId)
     val envelope = message.dmEnvelope
-    val thumbnailBase64 = message.fileThumbnails?.getOrNull(fileIndex)
 
     val cacheClientId = message.client_message_id?.trim()?.takeIf { it.isNotEmpty() }
     val decryptCacheKey = remember(message.id, fileIndex, cacheClientId) {
@@ -159,6 +167,7 @@ fun ImageFullscreenPreview(
     }
 
     val systemBarsVisibility = LocalSystemBarsVisibility.current
+
     LaunchedEffect(menusVisible) {
         systemBarsVisibility?.invoke(menusVisible)
     }

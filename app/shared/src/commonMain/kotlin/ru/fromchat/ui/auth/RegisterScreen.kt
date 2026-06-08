@@ -18,7 +18,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
+import ru.fromchat.ui.components.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,11 +34,11 @@ import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.stringResource
 import ru.fromchat.Res
 import ru.fromchat.api.ApiClient
-import ru.fromchat.api.RegisterRequest
 import ru.fromchat.api.apiRequest
-import ru.fromchat.crypto.IdentityKeyManager
+import ru.fromchat.api.schema.user.auth.RegisterRequest
 import ru.fromchat.back
 import ru.fromchat.confirm_password
+import ru.fromchat.api.crypto.IdentityKeyManager
 import ru.fromchat.display_name
 import ru.fromchat.display_name_error
 import ru.fromchat.error_unexpected
@@ -50,7 +50,7 @@ import ru.fromchat.register
 import ru.fromchat.register_button
 import ru.fromchat.register_d
 import ru.fromchat.ui.LocalNavController
-import ru.fromchat.ui.RowHeader
+import ru.fromchat.ui.components.RowHeader
 import ru.fromchat.username
 import ru.fromchat.username_length_error
 

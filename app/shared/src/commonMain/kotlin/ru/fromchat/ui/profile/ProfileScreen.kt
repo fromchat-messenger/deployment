@@ -1,9 +1,15 @@
 package ru.fromchat.ui.profile
 
-import androidx.compose.animation.core.Spring
-import androidx.compose.animation.core.spring
+import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.SharedTransitionScope
+import androidx.compose.animation.core.Spring
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.interaction.MutableInteractionSource
@@ -33,29 +39,25 @@ import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
-import androidx.compose.material3.LocalContentColor
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.MediumTopAppBar
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.rememberTopAppBarState
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
-import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.compose.LocalLifecycleOwner
-import androidx.lifecycle.repeatOnLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
@@ -63,37 +65,48 @@ import androidx.compose.ui.platform.ClipboardManager
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.pr0gramm3r101.components.Category
-import com.pr0gramm3r101.components.CategoryDefaults
 import com.pr0gramm3r101.components.ListItem
+import io.ktor.client.plugins.ClientRequestException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import io.ktor.client.plugins.ClientRequestException
 import org.jetbrains.compose.resources.stringResource
+import ru.fromchat.Logger
 import ru.fromchat.Res
-import ru.fromchat.*
-import ru.fromchat.core.Logger
+import ru.fromchat.action_chat
+import ru.fromchat.action_copy_link
+import ru.fromchat.action_open_settings
 import ru.fromchat.api.ApiClient
-import ru.fromchat.api.ProfileCache
-import ru.fromchat.api.UserProfile
-import ru.fromchat.api.visibleDisplayName
-import ru.fromchat.api.visibleUsername
-import ru.fromchat.api.UserStatus
-import ru.fromchat.api.UserStatusStore
+import ru.fromchat.api.local.db.store.ProfileCache
+import ru.fromchat.api.local.db.store.UserStatus
+import ru.fromchat.api.local.db.store.UserStatusStore
+import ru.fromchat.api.local.db.store.visibleDisplayName
+import ru.fromchat.api.local.db.store.visibleUsername
+import ru.fromchat.api.schema.user.profile.UserProfile
+import ru.fromchat.back
+import ru.fromchat.presence_online
+import ru.fromchat.presence_recently
+import ru.fromchat.profile_headline_bio
+import ru.fromchat.profile_headline_member_since
+import ru.fromchat.profile_headline_username
+import ru.fromchat.profile_headline_verification
+import ru.fromchat.profile_load_failed
+import ru.fromchat.profile_not_found
+import ru.fromchat.profile_title
+import ru.fromchat.profile_verified_support
+import ru.fromchat.profile_verify_prompt_support
 import ru.fromchat.ui.LocalNavController
 import ru.fromchat.ui.chat.Avatar
 import ru.fromchat.ui.chat.TypingIndicator
-import ru.fromchat.ui.chat.publicChatProfileSharedAvatarKey
-import ru.fromchat.ui.scaleOnPress
+import ru.fromchat.ui.chat.panels.publicchat.publicChatProfileSharedAvatarKey
+import ru.fromchat.ui.components.Text
 import ru.fromchat.utils.formatLastSeen
 import ru.fromchat.utils.rememberLastSeenFormatStrings
-import androidx.compose.animation.AnimatedContent
-import androidx.compose.animation.fadeIn
-import androidx.compose.animation.fadeOut
-import androidx.compose.animation.slideInVertically
-import androidx.compose.animation.slideOutVertically
-import androidx.compose.animation.togetherWith
+import com.pr0gramm3r101.utils.scaleOnPress
 
 private sealed interface ProfileLoadError {
     data object Generic : ProfileLoadError
@@ -106,7 +119,7 @@ private data class ProfileUiState(
     val error: ProfileLoadError? = null
 )
 
-private val profileActionCardPressSpring = spring<Float>(
+private val profileActionCardPressSpring = spring(
     dampingRatio = Spring.DampingRatioNoBouncy,
     stiffness = Spring.StiffnessLow,
     visibilityThreshold = 0.001f
@@ -125,7 +138,6 @@ fun ProfileScreen(
     sharedTransitionScope: SharedTransitionScope? = null,
     animatedVisibilityScope: AnimatedVisibilityScope? = null,
     sharedAvatarKey: Any? = null,
-    /** When true (Nav from public chat), [sharedSourceMessageId] pairs with [targetUserId] for the avatar key. */
     useSharedElementFromNavigation: Boolean = false,
     sharedSourceMessageId: Int = -1,
     initialDisplayName: String? = null,
@@ -134,33 +146,28 @@ fun ProfileScreen(
 ) {
     val clipboardManager: ClipboardManager = LocalClipboardManager.current
     val navController = LocalNavController.current
-    var linkCopied by remember { mutableStateOf(false) }
-    val profileTitle = stringResource(Res.string.profile_title)
-    val cdBack = stringResource(Res.string.back)
+    val lifecycleOwner = LocalLifecycleOwner.current
+    val scope = rememberCoroutineScope()
+
     val profileLoadFailed = stringResource(Res.string.profile_load_failed)
     val profileNotFound = stringResource(Res.string.profile_not_found)
-    val labelSettings = stringResource(Res.string.action_open_settings)
-    val labelChat = stringResource(Res.string.action_chat)
-    val labelLink = stringResource(Res.string.action_copy_link)
-    val linkCopiedText = stringResource(Res.string.link_copied)
-    val detailsTitle = stringResource(Res.string.profile_details_category)
-    val headlineUsername = stringResource(Res.string.profile_headline_username)
-    val headlineMemberSince = stringResource(Res.string.profile_headline_member_since)
-    val headlineBio = stringResource(Res.string.profile_headline_bio)
-    val headlineVerification = stringResource(Res.string.profile_headline_verification)
-    val verifiedSupport = stringResource(Res.string.profile_verified_support)
-    val verifyPromptSupport = stringResource(Res.string.profile_verify_prompt_support)
-    val hideBackButton = navController.currentDestination?.route == "chat"
+
     val targetUserId = userId.takeIf { it != null && it > 0 }
     val targetUsername = username?.trim()?.takeIf { it.isNotBlank() }
     val ownUserId = ApiClient.user?.id?.takeIf { it > 0 }
+
     val cacheLookupId = when {
         targetUserId != null -> targetUserId
         targetUsername != null -> null
         else -> ownUserId
     }
-    val isTargetProfileLookup = targetUserId != null || targetUsername != null
-    val lookupMode = if (targetUserId != null) "id" else if (targetUsername != null) "username" else "own"
+
+    val lookupMode = when {
+        targetUserId != null -> "id"
+        targetUsername != null -> "username"
+        else -> "own"
+    }
+
     val lookupIdentifier = when {
         targetUserId != null -> targetUserId.toString()
         !targetUsername.isNullOrBlank() -> targetUsername
@@ -168,22 +175,18 @@ fun ProfileScreen(
     }
 
     var state by remember(targetUserId, targetUsername, ownUserId) {
-        val cached = cacheLookupId?.let { ProfileCache.get(it) }
-        Logger.d(
-            "ProfileScreen",
-            "state init: cacheLookupId=$cacheLookupId cachedId=${cached?.id} cachedUsername=${cached?.username} cachedDisplay=${cached?.displayName}"
-        )
         mutableStateOf(
-            ProfileUiState(
-                profile = cached,
-                isLoading = cached == null,
-                error = null
-            )
+            cacheLookupId?.let { ProfileCache.get(it) }.let {
+                ProfileUiState(
+                    profile = it,
+                    isLoading = it == null,
+                    error = null
+                )
+            }
         )
     }
 
     val latestUi by rememberUpdatedState(state)
-    val lifecycleOwner = LocalLifecycleOwner.current
 
     LaunchedEffect(cacheLookupId, targetUserId, targetUsername, lifecycleOwner) {
         Logger.d(
@@ -191,44 +194,63 @@ fun ProfileScreen(
             "load start: mode=$lookupMode identifier=$lookupIdentifier cacheLookupId=$cacheLookupId ownUserId=$ownUserId " +
                 "lifecycleStarted=${lifecycleOwner.lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)}"
         )
+
         lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
-            runCatching {
-                if (targetUserId == null && targetUsername == null) {
-                    ApiClient.getOwnProfile()
-                } else if (targetUsername != null) {
-                    ApiClient.getProfileByUsername(targetUsername)
-                } else {
-                    ApiClient.getProfileById(targetUserId!!)
+            try {
+                val profile = when {
+                    targetUserId == null && targetUsername == null -> ApiClient.getOwnProfile()
+                    targetUsername != null -> ApiClient.getProfileByUsername(targetUsername)
+                    else -> ApiClient.getProfileById(targetUserId!!)
                 }
-            }.onSuccess { profile ->
+
                 if (profile.username.isBlank() && profile.displayName.isNullOrBlank()) {
                     cacheLookupId?.let { ProfileCache.evictUnusableClientPreview(it) }
-                    Logger.d("ProfileScreen", "load success but blank identity for id=${profile.id}, dropping as unusable preview")
+
+                    Logger.d(
+                        "ProfileScreen",
+                        "load success but blank identity for id=${profile.id}, dropping " +
+                            "as unusable preview"
+                    )
+
                     state = latestUi.copy(
                         profile = null,
                         isLoading = false,
                         error = ProfileLoadError.Generic
                     )
-                    return@onSuccess
+
+                    return@repeatOnLifecycle
                 }
+
                 Logger.d(
                     "ProfileScreen",
-                    "load success: mode=$lookupMode identifier=$lookupIdentifier -> id=${profile.id}, username='${profile.username}', display='${profile.displayName}', deleted=${profile.deleted}, suspended=${profile.suspended}"
+                    "load success: mode=$lookupMode identifier=$lookupIdentifier -> " +
+                        "id=${profile.id}, username='${profile.username}', " +
+                        "display='${profile.displayName}', deleted=${profile.deleted}, " +
+                        "suspended=${profile.suspended}"
                 )
+
                 ProfileCache.put(profile)
                 state = latestUi.copy(profile = profile, isLoading = false, error = null)
-            }.onFailure { err ->
-                val fallbackId = if (targetUsername != null) null else targetUserId ?: ownUserId
-                fallbackId?.let { ProfileCache.evictUnusableClientPreview(it) }
+            } catch (err: Exception) {
+                val fallbackId = (
+                    if (targetUsername != null) null else targetUserId ?: ownUserId
+                )?.also {
+                    ProfileCache.evictUnusableClientPreview(it)
+                }
+
                 val fallback = fallbackId?.let { ProfileCache.get(it) }
+
                 Logger.d(
                     "ProfileScreen",
-                    "load failure fallback lookup: fallbackId=$fallbackId fallbackFound=${fallback != null}"
+                    "load failure fallback lookup: fallbackId=$fallbackId " +
+                        "fallbackFound=${fallback != null}"
                 )
+
                 val resolvedErrorMessage = when {
                     err is ClientRequestException && err.response.status.value == 404 -> profileNotFound
                     else -> err.message?.takeIf { it.isNotBlank() } ?: profileLoadFailed
                 }
+
                 if (err is ClientRequestException) {
                     Logger.d(
                         "ProfileScreen",
@@ -242,14 +264,16 @@ fun ProfileScreen(
                             "errorType=${err::class.simpleName} message=${err.message}"
                     )
                 }
+
                 if (
                     showErrorAsToast &&
-                    isTargetProfileLookup &&
+                    (targetUserId != null || targetUsername != null) &&
                     latestUi.profile == null &&
                     fallback == null
                 ) {
                     showProfileLoadErrorMessage(resolvedErrorMessage)
                 }
+
                 state = latestUi.copy(
                     error = if (latestUi.profile == null && fallback == null) {
                         if (resolvedErrorMessage == profileLoadFailed) {
@@ -273,18 +297,13 @@ fun ProfileScreen(
         modifier = modifier.nestedScroll(scrollBehavior.nestedScrollConnection),
         topBar = {
             MediumTopAppBar(
-                title = { Text(profileTitle) },
+                title = { Text(stringResource(Res.string.profile_title)) },
                 navigationIcon = {
-                    if (!hideBackButton) {
-                        Box(
-                            modifier = Modifier
-                                .scaleOnPress(0.96f, onClick = onBack)
-                                .padding(12.dp),
-                            contentAlignment = Alignment.Center
-                        ) {
+                    if (navController.currentDestination?.route != "chat") {
+                        IconButton(onClick = onBack) {
                             Icon(
                                 imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                                contentDescription = cdBack,
+                                contentDescription = stringResource(Res.string.back),
                                 modifier = Modifier.size(24.dp)
                             )
                         }
@@ -298,6 +317,7 @@ fun ProfileScreen(
             modifier = Modifier.fillMaxSize()
         ) {
             val loadError = state.error
+
             val profile = state.profile
             val currentProfileUserId = targetUserId ?: ownUserId ?: profile?.id
             val displayName =
@@ -312,8 +332,8 @@ fun ProfileScreen(
                 } else {
                     null
                 }
-            val effectiveSharedAvatarKey: Any? = sharedAvatarKey ?: navSharedAvatarKey
 
+            val effectiveSharedAvatarKey: Any? = sharedAvatarKey ?: navSharedAvatarKey
             val useSharedAvatar = sharedTransitionScope != null &&
                 animatedVisibilityScope != null &&
                 effectiveSharedAvatarKey != null
@@ -327,24 +347,25 @@ fun ProfileScreen(
             ) {
                 when {
                     useSharedAvatar -> {
-                        val sharedKey = checkNotNull(effectiveSharedAvatarKey)
-                        val stScope = checkNotNull(sharedTransitionScope)
-                        val visScope = checkNotNull(animatedVisibilityScope)
-                        with(stScope) {
+                        with(sharedTransitionScope) {
                             Avatar(
                                 profilePictureUrl = profile?.profilePicture,
                                 displayName = displayName,
                                 modifier = Modifier
                                     .padding(top = 16.dp)
                                     .sharedElement(
-                                        rememberSharedContentState(key = sharedKey),
-                                        animatedVisibilityScope = visScope
+                                        rememberSharedContentState(
+                                            key = effectiveSharedAvatarKey
+                                        ),
+                                        animatedVisibilityScope = animatedVisibilityScope
                                     )
                                     .size(128.dp)
                             )
                         }
+
                         Spacer(modifier = Modifier.height(12.dp))
                     }
+
                     !hideAvatar -> {
                         Avatar(
                             profilePictureUrl = profile?.profilePicture,
@@ -353,28 +374,30 @@ fun ProfileScreen(
                                 .padding(top = 16.dp)
                                 .size(128.dp)
                         )
+
                         Spacer(modifier = Modifier.height(12.dp))
                     }
+
                     onAvatarSlotBounds != null -> {
                         Box(
                             modifier = Modifier
                                 .padding(top = 16.dp)
                                 .size(128.dp)
                                 .onGloballyPositioned { coords ->
-                                    val pos = coords.positionInRoot()
-                                    val sz = coords.size
                                     onAvatarSlotBounds(
                                         Rect(
-                                            pos.x,
-                                            pos.y,
-                                            pos.x + sz.width.toFloat(),
-                                            pos.y + sz.height.toFloat()
+                                            coords.positionInRoot().x,
+                                            coords.positionInRoot().y,
+                                            coords.positionInRoot().x + coords.size.width.toFloat(),
+                                            coords.positionInRoot().y + coords.size.height.toFloat()
                                         )
                                     )
                                 }
                         )
+
                         Spacer(modifier = Modifier.height(12.dp))
                     }
+
                     else -> {
                         Spacer(modifier = Modifier.height(16.dp + 128.dp + 12.dp))
                     }
@@ -384,19 +407,19 @@ fun ProfileScreen(
                     state.isLoading -> {
                         CircularProgressIndicator(modifier = Modifier.padding(top = 24.dp))
                     }
+
                     loadError != null -> {
-                        val errText = when (loadError) {
-                            ProfileLoadError.Generic -> profileLoadFailed
-                            is ProfileLoadError.Message -> loadError.text
-                        }
                         Text(
-                            text = errText,
+                            text = when (loadError) {
+                                ProfileLoadError.Generic -> profileLoadFailed
+                                is ProfileLoadError.Message -> loadError.text
+                            },
                             color = MaterialTheme.colorScheme.error,
                             modifier = Modifier.padding(top = 24.dp)
                         )
                     }
+
                     profile != null -> {
-                        /** Public chat message → profile: minimal identity (no @ handle, username row, member since). */
                         val compactIdentityForPublicChat =
                             useSharedElementFromNavigation && sharedSourceMessageId > 0
                         val profileLink =
@@ -407,30 +430,25 @@ fun ProfileScreen(
                                     ?.let { "https://fromchat.ru/@$it" }
                                     ?: "https://fromchat.ru/?u=${profile.id}"
                             }
-                        val scope = rememberCoroutineScope()
 
-                        val verificationLabel =
-                            if (profile.verified == true) verifiedSupport else verifyPromptSupport
                         val isOwnProfile = ApiClient.user?.id == profile.id
-                        val statusMap by UserStatusStore.status.collectAsState()
-                        val lastSeenFormat = rememberLastSeenFormatStrings()
-                        val statusState = statusMap[profile.id] ?: UserStatus(
-                            online = profile.online,
-                            lastSeen = profile.lastSeen
-                        )
+                        val statusState = UserStatusStore
+                            .status
+                            .collectAsState()
+                            .value[profile.id] ?: UserStatus(
+                                online = profile.online,
+                                lastSeen = profile.lastSeen
+                            )
+
                         val typingUsers = statusState.typingUsernames
                         val statusText = if (statusState.online) {
                             stringResource(Res.string.presence_online)
                         } else {
-                            formatLastSeen(false, statusState.lastSeen, lastSeenFormat)
-                                .ifEmpty { stringResource(Res.string.presence_recently) }
-                        }
-                        val statusStateKey = if (typingUsers.isNotEmpty()) {
-                            "typing:${typingUsers.joinToString("|")}"
-                        } else if (statusState.online) {
-                            "online"
-                        } else {
-                            "offline"
+                            formatLastSeen(
+                                false,
+                                statusState.lastSeen,
+                                rememberLastSeenFormatStrings()
+                            ).ifEmpty { stringResource(Res.string.presence_recently) }
                         }
 
                         Row(
@@ -441,36 +459,42 @@ fun ProfileScreen(
                                 text = displayName,
                                 style = MaterialTheme.typography.titleLarge
                             )
+
                             StatusBadge(
                                 verified = profile.verified,
                                 userId = profile.id
                             )
                         }
+
                         Spacer(modifier = Modifier.height(4.dp))
+
                         AnimatedContent(
-                            targetState = statusStateKey,
+                            targetState = when {
+                                typingUsers.isNotEmpty() -> "typing:${typingUsers.joinToString("|")}"
+                                statusState.online ->"online"
+                                else -> "offline"
+                            },
                             transitionSpec = {
                                 (slideInVertically { it / 2 } + fadeIn()) togetherWith
                                     (slideOutVertically { -it / 2 } + fadeOut())
                             },
                             label = "profile_status_${profile.id}"
                         ) { state ->
-                            when {
-                                state.startsWith("typing:") -> TypingIndicator(
+                            if (state.startsWith("typing:")) {
+                                TypingIndicator(
                                     typingUsers = typingUsers
                                 )
-                                state == "online" -> Text(
+                            } else {
+                                Text(
                                     text = statusText,
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.primary
-                                )
-                                else -> Text(
-                                    text = statusText,
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                                    color = if (state == "online")
+                                        MaterialTheme.colorScheme.primary
+                                    else MaterialTheme.colorScheme.onSurfaceVariant
                                 )
                             }
                         }
+
                         Spacer(modifier = Modifier.height(36.dp))
 
                         Row(
@@ -479,108 +503,74 @@ fun ProfileScreen(
                                 .padding(start = 16.dp, end = 16.dp, bottom = 20.dp),
                             horizontalArrangement = Arrangement.spacedBy(12.dp)
                         ) {
-                            val primarySource = remember { MutableInteractionSource() }
-                            val primaryClick: () -> Unit
-                            val primaryIcon = if (isOwnProfile) Icons.Filled.Settings else Icons.AutoMirrored.Filled.Chat
-                            val primaryLabel = if (isOwnProfile) labelSettings else labelChat
+                            @Composable
+                            fun Item(label: String, icon: ImageVector, onClick: () -> Unit) {
+                                val interactionSource = remember { MutableInteractionSource() }
 
-                            primaryClick = if (isOwnProfile) {
-                                onOpenSettings
+                                Card(
+                                    modifier = Modifier
+                                        .weight(1f)
+                                        .scaleOnPress(
+                                            scale = 0.90f,
+                                            interactionSource = interactionSource,
+                                            clipShape = MaterialTheme.shapes.extraLarge,
+                                            animationSpec = profileActionCardPressSpring
+                                        ),
+                                    shape = MaterialTheme.shapes.extraLarge,
+                                    colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .clickable(
+                                                interactionSource = interactionSource,
+                                                indication = LocalIndication.current,
+                                                onClick = onClick
+                                            ),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Column(
+                                            horizontalAlignment = Alignment.CenterHorizontally,
+                                            modifier = Modifier.padding(vertical = 16.dp)
+                                        ) {
+                                            Icon(
+                                                imageVector = icon,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(28.dp)
+                                            )
+
+                                            Spacer(modifier = Modifier.height(6.dp))
+
+                                            Text(
+                                                text = label,
+                                                style = MaterialTheme.typography.bodyMedium
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+
+                            if (isOwnProfile) {
+                                Item(
+                                    stringResource(Res.string.action_open_settings),
+                                    Icons.Filled.Settings,
+                                    onOpenSettings
+                                )
                             } else {
-                                { onChat(profile.id) }
-                            }
-
-                            Card(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .scaleOnPress(
-                                        scale = 0.90f,
-                                        interactionSource = primarySource,
-                                        clipShape = MaterialTheme.shapes.extraLarge,
-                                        animationSpec = profileActionCardPressSpring
-                                    ),
-                                shape = MaterialTheme.shapes.extraLarge,
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable(
-                                            interactionSource = primarySource,
-                                            indication = LocalIndication.current,
-                                            onClick = primaryClick
-                                        ),
-                                    contentAlignment = Alignment.Center
+                                Item(
+                                    stringResource(Res.string.action_chat),
+                                    Icons.AutoMirrored.Filled.Chat
                                 ) {
-                                    Column(
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        modifier = Modifier.padding(vertical = 16.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = primaryIcon,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(28.dp)
-                                        )
-                                        Spacer(modifier = Modifier.height(6.dp))
-                                        Text(
-                                            text = primaryLabel,
-                                            style = MaterialTheme.typography.bodyMedium
-                                        )
-                                    }
+                                    onChat(profile.id)
                                 }
                             }
-                            val linkSource = remember { MutableInteractionSource() }
-                            Card(
-                                modifier = Modifier
-                                    .weight(1f)
-                                    .scaleOnPress(
-                                        scale = 0.90f,
-                                        interactionSource = linkSource,
-                                        clipShape = MaterialTheme.shapes.extraLarge,
-                                        animationSpec = profileActionCardPressSpring
-                                    ),
-                                shape = MaterialTheme.shapes.extraLarge,
-                                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainer)
-                            ) {
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .clickable(
-                                            interactionSource = linkSource,
-                                            indication = LocalIndication.current,
-                                            onClick = {
-                                                clipboardManager.setText(AnnotatedString(profileLink))
-                                                linkCopied = true
-                                            }
-                                        ),
-                                    contentAlignment = Alignment.Center
-                                ) {
-                                    Column(
-                                        horizontalAlignment = Alignment.CenterHorizontally,
-                                        modifier = Modifier.padding(vertical = 16.dp)
-                                    ) {
-                                        Icon(
-                                            imageVector = Icons.Filled.Link,
-                                            contentDescription = null,
-                                            modifier = Modifier.size(28.dp)
-                                        )
-                                        Spacer(modifier = Modifier.height(6.dp))
-                                        Text(
-                                            text = labelLink,
-                                            style = MaterialTheme.typography.bodyMedium
-                                        )
-                                    }
-                                }
-                            }
-                        }
 
-                        if (linkCopied) {
-                            Spacer(modifier = Modifier.height(4.dp))
-                            Text(
-                                text = linkCopiedText,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.primary
-                            )
+                            Item(
+                                stringResource(Res.string.action_copy_link),
+                                Icons.Filled.Link
+                            ) {
+                                clipboardManager.setText(AnnotatedString(profileLink))
+                            }
                         }
 
                         val showDetailsUsername =
@@ -590,86 +580,63 @@ fun ProfileScreen(
                                 !profile.createdAt.isNullOrBlank()
                         val showDetailsBio = !profile.bio.isNullOrBlank()
                         val showDetailsVerify = profile.verified == true || ApiClient.user?.id == 1
+
                         if (
                             showDetailsUsername ||
-                                showDetailsMemberSince ||
-                                showDetailsBio ||
-                                showDetailsVerify
+                            showDetailsMemberSince ||
+                            showDetailsBio ||
+                            showDetailsVerify
                         ) {
-                            Category(Modifier.padding(top = 16.dp), title = detailsTitle) {
+                            Category(Modifier.padding(top = 16.dp)) {
                                 if (showDetailsUsername) {
                                     ListItem(
-                                        headline = headlineUsername,
-                                        supportingText = usernameForLinks.orEmpty(),
+                                        headline = stringResource(Res.string.profile_headline_username),
+                                        supportingText = usernameForLinks,
                                         divider = true,
-                                        dividerColor = CategoryDefaults.dividerColor,
-                                        dividerThickness = CategoryDefaults.dividerThickness,
                                         leadingContent = {
-                                            CompositionLocalProvider(
-                                                LocalContentColor provides MaterialTheme.colorScheme.onSurface
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Filled.AlternateEmail,
-                                                    contentDescription = null
-                                                )
-                                            }
+                                            Icon(
+                                                imageVector = Icons.Filled.AlternateEmail,
+                                                contentDescription = null
+                                            )
                                         }
                                     )
                                 }
+
                                 if (showDetailsMemberSince) {
                                     ListItem(
-                                        headline = headlineMemberSince,
+                                        headline = stringResource(Res.string.profile_headline_member_since),
                                         supportingText = profile.createdAt,
                                         divider = true,
-                                        dividerColor = CategoryDefaults.dividerColor,
-                                        dividerThickness = CategoryDefaults.dividerThickness,
                                         leadingContent = {
-                                            CompositionLocalProvider(
-                                                LocalContentColor provides MaterialTheme.colorScheme.onSurface
-                                            ) {
-                                                Icon(
-                                                    imageVector = Icons.Filled.CalendarMonth,
-                                                    contentDescription = null
-                                                )
-                                            }
+                                            Icon(
+                                                imageVector = Icons.Filled.CalendarMonth,
+                                                contentDescription = null
+                                            )
                                         }
                                     )
                                 }
+
                                 if (showDetailsBio) {
                                     ListItem(
-                                        headline = headlineBio,
+                                        headline = stringResource(Res.string.profile_headline_bio),
                                         supportingText = profile.bio,
                                         divider = true,
-                                        dividerColor = CategoryDefaults.dividerColor,
-                                        dividerThickness = CategoryDefaults.dividerThickness,
                                         leadingContent = {
-                                            CompositionLocalProvider(LocalContentColor provides MaterialTheme.colorScheme.onSurface) {
-                                                Icon(
-                                                    imageVector = Icons.Filled.Info,
-                                                    contentDescription = null
-                                                )
-                                            }
+                                            Icon(
+                                                imageVector = Icons.Filled.Info,
+                                                contentDescription = null
+                                            )
                                         }
                                     )
                                 }
 
                                 if (showDetailsVerify) {
-                                    val onVerifyToggle: () -> Unit = {
-                                        scope.launch {
-                                            val result = withContext(Dispatchers.Default) {
-                                                runCatching { ApiClient.verifyUser(profile.id) }.getOrNull()
-                                            }
-                                            result?.verified?.let { newVerified ->
-                                                val updated = state.profile?.copy(verified = newVerified)
-                                                state = state.copy(profile = updated)
-                                                updated?.let { ProfileCache.put(it) }
-                                            }
-                                        }
-                                    }
-
                                     ListItem(
-                                        headline = headlineVerification,
-                                        supportingText = verificationLabel,
+                                        headline = stringResource(Res.string.profile_headline_verification),
+                                        supportingText =
+                                            if (profile.verified == true)
+                                                stringResource(Res.string.profile_verified_support)
+                                            else stringResource(Res.string.profile_verify_prompt_support),
                                         leadingContent = {
                                             Icon(
                                                 imageVector = Icons.Filled.Verified,
@@ -677,9 +644,21 @@ fun ProfileScreen(
                                             )
                                         },
                                         divider = true,
-                                        dividerColor = CategoryDefaults.dividerColor,
-                                        dividerThickness = CategoryDefaults.dividerThickness,
-                                        onClick = if (ApiClient.user?.id == 1) onVerifyToggle else null
+                                        onClick = if (ApiClient.user?.id == 1) {
+                                            {
+                                                scope.launch {
+                                                    val result = withContext(Dispatchers.Default) {
+                                                        runCatching { ApiClient.verifyUser(profile.id) }.getOrNull()
+                                                    }
+                                                    result?.verified?.let { newVerified ->
+                                                        val updated =
+                                                            state.profile?.copy(verified = newVerified)
+                                                        state = state.copy(profile = updated)
+                                                        updated?.let { ProfileCache.put(it) }
+                                                    }
+                                                }
+                                            }
+                                        } else null
                                     )
                                 }
                             }
@@ -690,3 +669,5 @@ fun ProfileScreen(
         }
     }
 }
+
+expect fun showProfileLoadErrorMessage(message: String)

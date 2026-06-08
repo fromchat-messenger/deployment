@@ -1,8 +1,9 @@
 package ru.fromchat.api
 
-import ru.fromchat.core.Logger
 import io.ktor.client.call.body
 import io.ktor.client.plugins.ClientRequestException
+import ru.fromchat.api.schema.core.ErrorResponse
+import ru.fromchat.Logger
 
 suspend inline fun <Response> apiRequest(
     unexpectedError: String,

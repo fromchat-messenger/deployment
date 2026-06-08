@@ -26,7 +26,6 @@ import androidx.compose.material.icons.rounded.Edit
 import androidx.compose.material.icons.rounded.SaveAlt
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -51,10 +50,18 @@ import androidx.compose.ui.window.Popup
 import androidx.compose.ui.window.PopupProperties
 import org.jetbrains.compose.resources.stringResource
 import ru.fromchat.Res
-import ru.fromchat.api.Message
-import ru.fromchat.api.isQueuedOutbound
-import ru.fromchat.*
-import ru.fromchat.ui.scaleOnPress
+import ru.fromchat.action_cancel_send
+import ru.fromchat.action_copy
+import ru.fromchat.action_delete
+import ru.fromchat.action_edit
+import ru.fromchat.action_reply
+import ru.fromchat.action_save
+import ru.fromchat.api.local.download.resolveSavableMessageFile
+import ru.fromchat.api.local.download.resolveSavableMessageImage
+import ru.fromchat.api.local.messages.isQueuedOutbound
+import ru.fromchat.api.schema.messages.Message
+import ru.fromchat.ui.components.Text
+import com.pr0gramm3r101.utils.scaleOnPress
 
 data class ContextMenuState(
     val isOpen: Boolean = false,
@@ -82,7 +89,6 @@ internal fun messageContextMenuFingerprint(
     }
 }
 
-@Suppress("AssignedValueIsNeverRead")
 @Composable
 fun MessageContextMenu(
     state: ContextMenuState,

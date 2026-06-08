@@ -3,10 +3,11 @@ package ru.fromchat.ui.chat
 import androidx.compose.runtime.Composable
 import org.jetbrains.compose.resources.stringResource
 import ru.fromchat.Res
-import ru.fromchat.api.ProfileCache
-import ru.fromchat.api.visibleUsername
-import ru.fromchat.api.Message
-import ru.fromchat.*
+import ru.fromchat.api.local.db.store.ProfileCache
+import ru.fromchat.api.schema.messages.Message
+import ru.fromchat.api.local.db.store.visibleUsername
+import ru.fromchat.message_sender_you
+import ru.fromchat.user_fallback
 
 private val userIdUsernamePattern = Regex("^User (\\d+)$")
 

@@ -49,7 +49,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.SnackbarHostState
-import androidx.compose.material3.Text
+import ru.fromchat.ui.components.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
@@ -77,7 +77,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.stringResource
 import ru.fromchat.Res
-import ru.fromchat.api.Message
+import ru.fromchat.api.schema.messages.Message
 import ru.fromchat.cd_close
 import ru.fromchat.cd_emoji
 import ru.fromchat.cd_pick_file
@@ -89,6 +89,11 @@ import ru.fromchat.message_editing_title
 import ru.fromchat.message_placeholder
 import ru.fromchat.message_replying_to
 import ru.fromchat.suspend_chat_banner_message
+import ru.fromchat.ui.chat.utils.SelectedAttachment
+import ru.fromchat.ui.chat.utils.TypingHandler
+import ru.fromchat.ui.chat.utils.getFilenameFromUri
+import ru.fromchat.ui.chat.utils.rememberFilePicker
+import ru.fromchat.ui.chat.utils.rememberImagePicker
 import kotlin.time.Clock
 
 private val ChatInputChromeHeight = 54.dp

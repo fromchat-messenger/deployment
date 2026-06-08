@@ -10,8 +10,8 @@ import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import ru.fromchat.api.ApiClient
-import ru.fromchat.api.AttachmentTransferBootstrap
-import ru.fromchat.api.WebSocketManager
+import ru.fromchat.api.local.workers.AttachmentTransferBootstrap
+import ru.fromchat.api.local.WebSocketManager
 import ru.fromchat.notifications.NotificationHelper
 
 class App: Application() {

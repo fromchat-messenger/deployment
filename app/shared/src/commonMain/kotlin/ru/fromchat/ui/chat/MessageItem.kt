@@ -28,7 +28,6 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -53,10 +52,17 @@ import androidx.compose.ui.unit.sp
 import com.pr0gramm3r101.utils.conditional
 import org.jetbrains.compose.resources.stringResource
 import ru.fromchat.Res
-import ru.fromchat.api.Message
-import ru.fromchat.api.isQueuedOutbound
-import ru.fromchat.api.formatMessageTimeLocal
-import ru.fromchat.*
+import ru.fromchat.api.local.cache.DecryptedImageCache
+import ru.fromchat.api.local.messages.formatMessageTimeLocal
+import ru.fromchat.api.local.messages.isQueuedOutbound
+import ru.fromchat.api.schema.messages.Message
+import ru.fromchat.message_corrupted
+import ru.fromchat.message_edited_suffix
+import ru.fromchat.ui.chat.components.getMessageGradient
+import ru.fromchat.ui.chat.components.getReplyMessageGradient
+import ru.fromchat.ui.chat.utils.imageAspectRatioForMessage
+import ru.fromchat.ui.chat.utils.imageAttachmentKey
+import ru.fromchat.ui.components.Text
 
 /** True when [Message.content] is only a filename placeholder (no real caption). */
 internal fun isFilenameOnlyMessageCaption(message: Message): Boolean {
@@ -558,7 +564,7 @@ fun MessageItem(
                                         fileIndex = index,
                                         confirmed = message.id > 0,
                                         hasLocalPreview = index == 0 &&
-                                            DecryptedImageCache.isDecryptedImageCacheUri(message.pendingFileUri),
+                                                DecryptedImageCache.isDecryptedImageCacheUri(message.pendingFileUri),
                                     ),
                                     fileSizeBytes = message.fileSizes?.getOrNull(index),
                                     messageId = message.id,

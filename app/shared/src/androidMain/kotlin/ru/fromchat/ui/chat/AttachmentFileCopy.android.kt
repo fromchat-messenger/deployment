@@ -4,7 +4,7 @@ import android.net.Uri
 import com.pr0gramm3r101.utils.UtilsLibrary
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import ru.fromchat.api.AttachmentFileCopyForeground
+import ru.fromchat.api.local.workers.AttachmentFileCopyForeground
 import java.io.File
 import java.io.FileInputStream
 

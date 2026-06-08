@@ -1,3 +1,5 @@
+@file:OptIn(ExperimentalHazeMaterialsApi::class)
+
 package ru.fromchat.ui.chat
 
 import androidx.compose.animation.AnimatedContent
@@ -30,16 +32,15 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.AttachFile
 import androidx.compose.material.icons.rounded.Download
-import androidx.compose.material.icons.rounded.InsertDriveFile
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.CircularWavyProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Surface
 import androidx.compose.material3.ProgressIndicatorDefaults
+import androidx.compose.material3.Surface
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.WavyProgressIndicatorDefaults
-import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -51,15 +52,8 @@ import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
-import androidx.compose.material3.TextButton
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.launch
-import kotlinx.coroutines.withContext
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.semantics.contentDescription
-import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.draw.alpha
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Rect
@@ -69,30 +63,49 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import coil3.compose.AsyncImage
-import coil3.compose.rememberAsyncImagePainter
 import com.pr0gramm3r101.utils.conditional
 import com.pr0gramm3r101.utils.crypto.Base64
 import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import dev.chrisbanes.haze.materials.HazeMaterials
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import org.jetbrains.compose.resources.stringResource
 import ru.fromchat.Res
 import ru.fromchat.api.ApiClient
-import ru.fromchat.api.AttachmentDownloadNotifier
-import ru.fromchat.ui.scaleOnPress
-import ru.fromchat.api.DmEnvelope
-import ru.fromchat.api.DmFile
+import ru.fromchat.api.local.AttachmentMediaLog
+import ru.fromchat.api.local.cache.DecryptedImageCache
+import ru.fromchat.api.local.cache.UPLOAD_ERROR_FILE_TOO_LARGE
+import ru.fromchat.api.local.download.AttachmentDownloadNotifier
+import ru.fromchat.api.local.download.AttachmentDownloadScheduler
+import ru.fromchat.api.local.download.ChatPreviewDecodeSize
+import ru.fromchat.api.local.download.LocalDecodedImageCache
+import ru.fromchat.api.local.download.rememberChatPreviewDecodeSize
+import ru.fromchat.api.local.send.previewSeedDecodeSize
+import ru.fromchat.api.schema.messages.dm.DmEnvelope
+import ru.fromchat.api.schema.messages.dm.DmFile
 import ru.fromchat.attachment_image_load_failed
 import ru.fromchat.attachment_retry
 import ru.fromchat.attachment_upload_failed
 import ru.fromchat.attachment_upload_failed_too_large
 import ru.fromchat.cd_attachment_retry
 import ru.fromchat.cd_attachment_upload_retry
-import ru.fromchat.core.cache.UPLOAD_ERROR_FILE_TOO_LARGE
+import ru.fromchat.ui.chat.components.AttachmentLeadingTransitionMs
+import ru.fromchat.ui.chat.components.CancellableAttachmentProgressIndicator
+import ru.fromchat.ui.chat.components.ChatFileAttachmentTile
+import ru.fromchat.ui.chat.components.FileAttachmentLeadingSlot
+import ru.fromchat.ui.chat.utils.attachmentImageCornerShape
+import ru.fromchat.ui.chat.utils.coalesceDecodeTarget
+import ru.fromchat.ui.chat.utils.decodeSizeChangedMeaningfully
+import ru.fromchat.ui.components.Text
+import com.pr0gramm3r101.utils.scaleOnPress
 
 private val IMAGE_SIZE = 160.dp
 private const val BLUR_FADE_MS = 450
@@ -367,7 +380,7 @@ private fun ChatImageTileContent(
     val thumbnailBytes = remember(thumbnailBase64) {
         thumbnailBase64?.let { decodeAttachmentThumbnailBase64(it) }
     }
-    val thumbBitmap by produceState<ImageBitmap?>(
+    val thumbBitmap by produceState(
         initialValue = LocalDecodedImageCache.peekThumb(decryptCacheKey),
         decryptCacheKey,
         thumbnailBytes,
@@ -397,14 +410,13 @@ private fun ChatImageTileContent(
         cacheClientId,
         loadAttempt,
     ) {
-        val target = decodeSize
         AttachmentMediaLog.tileLoad(
             "load_start",
             "key" to decryptCacheKey,
             "msgId" to messageId,
             "pending" to isOutboundPending,
             "localUri" to (localUri?.take(48) ?: "null"),
-            "target" to "${target.widthPx}x${target.heightPx}",
+            "target" to "${decodeSize.widthPx}x${decodeSize.heightPx}",
         )
         val diskUri = DecryptedImageCache.getCached(messageId, fileIndex, cacheClientId)
         val localPaths = buildList {
@@ -418,7 +430,7 @@ private fun ChatImageTileContent(
                         LocalDecodedImageCache.loadFull(
                             decryptCacheKey,
                             path.removePrefix("file://"),
-                            target,
+                            decodeSize,
                         )
                     }
             }
@@ -451,9 +463,7 @@ private fun ChatImageTileContent(
             if (fullBitmap != null || thumbBitmap != null) onFullyLoaded(true)
             return@LaunchedEffect
         }
-        val file = serverFile
-        val env = envelope
-        if (file == null || env == null) {
+        if (serverFile == null || envelope == null) {
             decryptFinished = true
             AttachmentMediaLog.tileLoad("load_skip_no_envelope", "key" to decryptCacheKey)
             return@LaunchedEffect
@@ -461,7 +471,9 @@ private fun ChatImageTileContent(
         if (diskUri != null) {
             cachedPath = diskUri
             val loaded = withContext(Dispatchers.Default) {
-                LocalDecodedImageCache.loadFull(decryptCacheKey, diskUri.removePrefix("file://"), target)
+                LocalDecodedImageCache.loadFull(decryptCacheKey, diskUri.removePrefix("file://"),
+                    decodeSize
+                )
             }
             if (loaded != null) {
                 AttachmentMediaLog.tileLoad(
@@ -489,15 +501,15 @@ private fun ChatImageTileContent(
         AttachmentMediaLog.tileLoad(
             "load_network_decrypt",
             "key" to decryptCacheKey,
-            "file" to file.path,
+            "file" to serverFile.path,
         )
         isAwaitingNetworkFull = true
         val uri = try {
             DecryptedImageCache.getOrDecrypt(
                 messageId = messageId,
                 fileIndex = fileIndex,
-                file = file,
-                envelope = env,
+                file = serverFile,
+                envelope = envelope,
                 currentUserId = currentUserId,
                 clientMessageId = cacheClientId,
                 messageLabel = messageLabel,
@@ -516,7 +528,9 @@ private fun ChatImageTileContent(
         cachedPath = uri
         if (uri != null) {
             fullBitmap = withContext(Dispatchers.Default) {
-                LocalDecodedImageCache.loadFull(decryptCacheKey, uri.removePrefix("file://"), target)
+                LocalDecodedImageCache.loadFull(decryptCacheKey, uri.removePrefix("file://"),
+                    decodeSize
+                )
             }
         }
         decryptFinished = true
@@ -745,7 +759,7 @@ private fun ChatImageTileContent(
         }
         if (showOutboundBlurOverlay && outboundOverlayAlpha.value > 0.01f) {
             UploadingImageOverlay(
-                model = localUri!!,
+                model = localUri,
                 uploadProgress = if (isUploading || awaitingServerAck) uploadProgress else null,
                 clipShape = clipShape,
                 contentScale = imageContentScale,

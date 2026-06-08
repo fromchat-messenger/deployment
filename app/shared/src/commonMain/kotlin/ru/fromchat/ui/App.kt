@@ -25,11 +25,9 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.IntOffset
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
-import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.NavBackStackEntry
 import androidx.navigation.NavController
 import androidx.navigation.NavGraphBuilder
@@ -41,6 +39,8 @@ import androidx.navigation.navArgument
 import coil3.ImageLoader
 import coil3.compose.setSingletonImageLoaderFactory
 import coil3.svg.SvgDecoder
+import com.pr0gramm3r101.utils.LocalSystemBarsVisibility
+import com.pr0gramm3r101.utils.rememberSystemBarsController
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.launch
@@ -52,43 +52,42 @@ import kotlinx.serialization.json.decodeFromJsonElement
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import ru.fromchat.AppForeground
+import ru.fromchat.Logger
 import ru.fromchat.api.ApiClient
-import ru.fromchat.api.AttachmentDownloadNotifier
-import ru.fromchat.api.ProfileCache
+import ru.fromchat.api.DeferredStartupNetwork
 import ru.fromchat.api.UpdateSyncManager
-import ru.fromchat.api.UserStatusStore
-import ru.fromchat.api.WebSocketManager
-import ru.fromchat.api.WebSocketMessage
-import ru.fromchat.api.WebSocketUpdatesData
-import ru.fromchat.api.outbox.OutgoingMessageCoordinator
-import ru.fromchat.api.outbox.scheduleOutboxProcessing
-import ru.fromchat.core.cache.CacheContext
-import ru.fromchat.core.Logger
-import ru.fromchat.core.cache.ensureFromChatCacheGeneration
-import ru.fromchat.core.config.Config
-import ru.fromchat.net.NetworkConnectivity
+import ru.fromchat.api.calls.CallStore
+import ru.fromchat.api.instance.bootstrapSessionOnStartup
+import ru.fromchat.api.instance.logoutIfInstanceUnsupported
+import ru.fromchat.api.local.WebSocketManager
+import ru.fromchat.api.local.cache.CacheContext
+import ru.fromchat.api.local.cache.ensureFromChatCacheGeneration
+import ru.fromchat.api.local.db.store.ProfileCache
+import ru.fromchat.api.local.db.store.UserStatusStore
+import ru.fromchat.api.local.send.OutgoingMessageCoordinator
+import ru.fromchat.api.local.send.scheduleOutboxProcessing
+import ru.fromchat.api.schema.websocket.WebSocketMessage
+import ru.fromchat.api.schema.websocket.types.WebSocketUpdatesData
+import ru.fromchat.config.ServerConfig
 import ru.fromchat.ui.auth.LoginScreen
 import ru.fromchat.ui.auth.RegisterScreen
-import ru.fromchat.ui.chat.PublicChatScreen
-import ru.fromchat.ui.debug.DebugApiScreen
-import ru.fromchat.ui.debug.DebugSearchBarDocsScreen
-import ru.fromchat.ui.dm.DmChatRoute
-import ru.fromchat.ui.dm.DmNav
-import ru.fromchat.ui.dm.DmProfileRoute
-import ru.fromchat.ui.main.ChatsSearchScreen
+import ru.fromchat.ui.calls.CallOverlay
+import ru.fromchat.ui.chat.panels.dm.DmChatRoute
+import ru.fromchat.ui.chat.panels.dm.DmNav
+import ru.fromchat.ui.chat.panels.dm.DmProfileRoute
+import ru.fromchat.ui.chat.panels.publicchat.PublicChatScreen
 import ru.fromchat.ui.main.MainScreen
-import ru.fromchat.ui.main.settings.SettingsAccountScreen
-import ru.fromchat.ui.main.settings.SettingsAppearanceScreen
-import ru.fromchat.ui.main.settings.SettingsDevicesScreen
-import ru.fromchat.ui.main.settings.SettingsNotificationsScreen
+import ru.fromchat.ui.main.chats.ChatsSearchScreen
+import ru.fromchat.ui.main.settings.AboutScreen
+import ru.fromchat.ui.main.settings.AppearanceScreen
+import ru.fromchat.ui.main.settings.DevicesScreen
+import ru.fromchat.ui.main.settings.NotificationsScreen
 import ru.fromchat.ui.main.settings.SettingsRoutes
-import ru.fromchat.ui.main.settings.SettingsSecurityHubScreen
-import ru.fromchat.ui.main.settings.SettingsSecurityPasswordFlowScreen
-import ru.fromchat.ui.main.settings.SettingsServerToolsScreen
+import ru.fromchat.ui.main.settings.account.AccountScreen
+import ru.fromchat.ui.main.settings.account.SettingsSecurityPasswordFlowScreen
+import ru.fromchat.ui.main.settings.server.ServerConfigScreen
 import ru.fromchat.ui.profile.ProfileScreen
-import ru.fromchat.calls.CallOverlay
-import ru.fromchat.calls.CallStore
-import ru.fromchat.ui.setup.ServerConfigScreen
+import ru.fromchat.utils.NetworkConnectivity
 
 val LocalNavController = compositionLocalOf<NavController> { error("NavController not provided") }
 
@@ -195,7 +194,7 @@ fun App(
 
     LaunchedEffect(Unit) {
         kotlinx.coroutines.withContext(Dispatchers.Default) {
-            runCatching { Config.initialize() }
+            runCatching { ServerConfig.initialize() }
             runCatching { ensureFromChatCacheGeneration() }
             runCatching { NetworkConnectivity.ensureStarted() }
             runCatching { ApiClient.loadPersistedData() }
@@ -213,13 +212,13 @@ fun App(
             UpdateSyncManager.initializeFromStorage(ApiClient.user?.id)
         }
 
-        ru.fromchat.core.DeferredStartupNetwork.scheduleAfterUiVisible()
+        DeferredStartupNetwork.scheduleAfterUiVisible()
 
         if (!hasToken) return@LaunchedEffect
 
         launch(Dispatchers.Default) {
             runCatching {
-                ru.fromchat.core.instance.bootstrapSessionOnStartup(
+                bootstrapSessionOnStartup(
                     hasToken = true,
                     onLogoutRequired = { sessionLogoutRequired = true },
                 )
@@ -233,7 +232,7 @@ fun App(
 
     LaunchedEffect(sessionLogoutRequired) {
         if (!sessionLogoutRequired) return@LaunchedEffect
-        ru.fromchat.core.instance.logoutIfInstanceUnsupported()
+        logoutIfInstanceUnsupported()
         startDestination = "login"
         sessionLogoutRequired = false
     }
@@ -256,7 +255,7 @@ fun App(
                         val instanceId = CacheContext.activeInstanceId.value.trim()
                         if (instanceId.isNotEmpty()) {
                             scheduleOutboxProcessing(instanceId)
-                            kotlinx.coroutines.withContext(kotlinx.coroutines.Dispatchers.Default) {
+                            kotlinx.coroutines.withContext(Dispatchers.Default) {
                                 OutgoingMessageCoordinator.drainOutboxForInstance(instanceId)
                             }
                         }
@@ -389,255 +388,238 @@ fun App(
                                 )
                             }
                         ) {
-                        composable("serverConfig") {
-                            ServerConfigScreen()
-                        }
+                            composable("serverConfig") {
+                                ServerConfigScreen()
+                            }
 
-                        composable("login") {
-                            LoginScreen(
-                                onLoginSuccess = {
-                                    WebSocketManager.connect(forceRestart = true)
-                                    navController.navigate("chat") {
-                                        popUpTo("login") { inclusive = true }
+                            composable("login") {
+                                LoginScreen(
+                                    onLoginSuccess = {
+                                        WebSocketManager.connect(forceRestart = true)
+                                        navController.navigate("chat") {
+                                            popUpTo("login") { inclusive = true }
+                                        }
+                                    },
+                                    onNavigateToRegister = { navController.navigate("register") }
+                                )
+                            }
+
+                            composable("register") {
+                                RegisterScreen(
+                                    onRegistered = {
+                                        navController.navigate("chat") {
+                                            popUpTo("login") { inclusive = true }
+                                        }
+                                    }
+                                )
+                            }
+
+                            composable("chat") {
+                                MainScreen(
+                                    sharedTransitionScope = this@SharedTransitionLayout,
+                                    animatedVisibilityScope = this,
+                                    snackbarHostState = profileLookupSnackbarHostState
+                                )
+                            }
+
+                            composable("chats/publicChat") {
+                                PublicChatScreen(
+                                    scrollToMessageId = scrollToMessageId,
+                                    sharedTransitionScope = this@SharedTransitionLayout,
+                                    animatedContentScope = this@composable
+                                )
+                            }
+
+                            val searchScreenFade = tween<Float>(260)
+                            composable(
+                                route = "search/conversations",
+                                enterTransition = { fadeIn(animationSpec = searchScreenFade) },
+                                exitTransition = { fadeOut(animationSpec = searchScreenFade) },
+                                popEnterTransition = { fadeIn(animationSpec = searchScreenFade) },
+                                popExitTransition = { fadeOut(animationSpec = searchScreenFade) }
+                            ) {
+                                ChatsSearchScreen(
+                                    onBack = { navController.popBackStack() },
+                                    sharedTransitionScope = this@SharedTransitionLayout,
+                                    animatedVisibilityScope = this,
+                                    onOpenProfile = { userId: Int ->
+                                        if (userId != 0) {
+                                            navController.navigate("profile/$userId")
+                                        }
+                                    },
+                                    onOpenConversation = { userId: Int ->
+                                        if (userId != 0) {
+                                            navController.navigate(DmNav.chatRoute(userId))
+                                        }
+                                    }
+                                )
+                            }
+
+                            composable(
+                                route = "profile/{userId}?fromDeepLink={fromDeepLink}&useSharedElement={useSharedElement}&sourceMessageId={sourceMessageId}",
+                                arguments = listOf(
+                                    navArgument("userId") { type = NavType.StringType },
+                                    navArgument("fromDeepLink") {
+                                        type = NavType.BoolType
+                                        defaultValue = false
+                                    },
+                                    navArgument("useSharedElement") {
+                                        type = NavType.StringType
+                                        defaultValue = "false"
+                                    },
+                                    navArgument("sourceMessageId") {
+                                        type = NavType.StringType
+                                        defaultValue = "-1"
+                                    }
+                                )
+                            ) { backStackEntry ->
+                                val args = backStackEntry.savedStateHandle
+                                val userIdParam = args.get<String>("userId")
+                                val parsedUserId = userIdParam?.toIntOrNull()
+                                val userId = if ((parsedUserId ?: 0) > 0) parsedUserId else null
+                                val profileUsername = if (userId == null) {
+                                    userIdParam?.trim()?.takeIf { it.isNotBlank() }
+                                } else {
+                                    null
+                                }
+                                val useSharedElement = when (val rawUseSharedElement = args.get<Any?>("useSharedElement")) {
+                                    is Boolean -> rawUseSharedElement
+                                    is String -> rawUseSharedElement == "true"
+                                    else -> false
+                                }
+                                val sourceMessageId = when (val rawSourceMessageId = args.get<Any?>("sourceMessageId")) {
+                                    is Int -> rawSourceMessageId
+                                    is String -> rawSourceMessageId.toIntOrNull() ?: -1
+                                    is Long -> rawSourceMessageId.toInt()
+                                    else -> -1
+                                }
+                                val fromDeepLink = when (val rawFromDeepLink = args.get<Any?>("fromDeepLink")) {
+                                    is Boolean -> rawFromDeepLink
+                                    is String -> rawFromDeepLink == "true"
+                                    else -> false
+                                }
+
+                                Logger.d(
+                                    "ProfileRoute",
+                                    "profile entry args: rawUserId=$userIdParam parsedUserId=$parsedUserId resolvedUserId=$userId " +
+                                        "resolvedUsername=$profileUsername sourceMessageId=$sourceMessageId fromDeepLink=$fromDeepLink " +
+                                        "useSharedElement=$useSharedElement currentRoute=${backStackEntry.destination.route}"
+                                )
+
+                                ProfileScreen(
+                                    userId = userId,
+                                    username = profileUsername,
+                                    onBack = { navController.navigateUp() },
+                                    onChat = { navController.navigate(DmNav.chatRoute(it)) },
+                                    sharedTransitionScope = this@SharedTransitionLayout,
+                                    animatedVisibilityScope = this@composable,
+                                    useSharedElementFromNavigation = useSharedElement,
+                                    sharedSourceMessageId = sourceMessageId,
+                                    showErrorAsToast = fromDeepLink
+                                )
+                            }
+
+                            val dmChatProfileFade = tween<Float>(durationMillis = 280)
+
+                            composable(
+                                route = DmNav.CHAT_ROUTE,
+                                arguments = listOf(
+                                    navArgument("otherUserId") { type = NavType.StringType },
+                                    navArgument("sourceMessageId") { type = NavType.IntType; defaultValue = -1 },
+                                ),
+                                enterTransition = {
+                                    when (initialState.destination.route) {
+                                        DmNav.PROFILE_ROUTE -> fadeIn(animationSpec = dmChatProfileFade)
+                                        else -> slideIntoContainer(Start, animationSpec = rootNavMotion)
                                     }
                                 },
-                                onNavigateToRegister = { navController.navigate("register") }
-                            )
-                        }
-
-                        composable("register") {
-                            RegisterScreen(
-                                onRegistered = {
-                                    navController.navigate("chat") {
-                                        popUpTo("login") { inclusive = true }
-                                    }
-                                }
-                            )
-                        }
-
-                        composable("chat") {
-                            MainScreen(
-                                sharedTransitionScope = this@SharedTransitionLayout,
-                                animatedVisibilityScope = this,
-                                snackbarHostState = profileLookupSnackbarHostState
-                            )
-                        }
-
-                        composable("chats/publicChat") {
-                            PublicChatScreen(
-                                scrollToMessageId = scrollToMessageId,
-                                sharedTransitionScope = this@SharedTransitionLayout,
-                                animatedContentScope = this@composable
-                            )
-                        }
-
-                        val searchScreenFade = tween<Float>(260)
-                        composable(
-                            route = "search/conversations",
-                            enterTransition = { fadeIn(animationSpec = searchScreenFade) },
-                            exitTransition = { fadeOut(animationSpec = searchScreenFade) },
-                            popEnterTransition = { fadeIn(animationSpec = searchScreenFade) },
-                            popExitTransition = { fadeOut(animationSpec = searchScreenFade) }
-                        ) {
-                            ChatsSearchScreen(
-                                onBack = { navController.popBackStack() },
-                                sharedTransitionScope = this@SharedTransitionLayout,
-                                animatedVisibilityScope = this,
-                                onOpenProfile = { userId: Int ->
-                                    if (userId != 0) {
-                                        navController.navigate("profile/$userId")
+                                exitTransition = {
+                                    when (targetState.destination.route) {
+                                        DmNav.PROFILE_ROUTE -> fadeOut(animationSpec = dmChatProfileFade)
+                                        else -> slideOutOfContainer(Start, animationSpec = rootNavMotion)
                                     }
                                 },
-                                onOpenConversation = { userId: Int ->
-                                    if (userId != 0) {
-                                        navController.navigate(DmNav.chatRoute(userId))
+                                popEnterTransition = {
+                                    when (initialState.destination.route) {
+                                        DmNav.PROFILE_ROUTE -> fadeIn(animationSpec = dmChatProfileFade)
+                                        else -> slideIntoContainer(End, animationSpec = rootNavMotion)
                                     }
-                                }
-                            )
-                        }
-
-                        composable("debug") {
-                            DebugApiScreen()
-                        }
-                        composable("debug/searchbar-docs") {
-                            DebugSearchBarDocsScreen()
-                        }
-
-                        composable(
-                            route = "profile/{userId}?fromDeepLink={fromDeepLink}&useSharedElement={useSharedElement}&sourceMessageId={sourceMessageId}",
-                            arguments = listOf(
-                                navArgument("userId") { type = NavType.StringType },
-                                navArgument("fromDeepLink") {
-                                    type = NavType.BoolType
-                                    defaultValue = false
                                 },
-                                navArgument("useSharedElement") {
-                                    type = NavType.StringType
-                                    defaultValue = "false"
+                                popExitTransition = {
+                                    when (targetState.destination.route) {
+                                        DmNav.PROFILE_ROUTE -> fadeOut(animationSpec = dmChatProfileFade)
+                                        else -> slideOutOfContainer(End, animationSpec = rootNavMotion)
+                                    }
                                 },
-                                navArgument("sourceMessageId") {
-                                    type = NavType.StringType
-                                    defaultValue = "-1"
-                                }
-                            )
-                        ) { backStackEntry ->
-                            val args = backStackEntry.savedStateHandle
-                            val userIdParam = args.get<String>("userId")
-                            val parsedUserId = userIdParam?.toIntOrNull()
-                            val userId = if ((parsedUserId ?: 0) > 0) parsedUserId else null
-                            val profileUsername = if (userId == null) {
-                                userIdParam?.trim()?.takeIf { it.isNotBlank() }
-                            } else {
-                                null
-                            }
-                            val useSharedElement = when (val rawUseSharedElement = args.get<Any?>("useSharedElement")) {
-                                is Boolean -> rawUseSharedElement
-                                is String -> rawUseSharedElement == "true"
-                                else -> false
-                            }
-                            val sourceMessageId = when (val rawSourceMessageId = args.get<Any?>("sourceMessageId")) {
-                                is Int -> rawSourceMessageId
-                                is String -> rawSourceMessageId.toIntOrNull() ?: -1
-                                is Long -> rawSourceMessageId.toInt()
-                                else -> -1
-                            }
-                            val fromDeepLink = when (val rawFromDeepLink = args.get<Any?>("fromDeepLink")) {
-                                is Boolean -> rawFromDeepLink
-                                is String -> rawFromDeepLink == "true"
-                                else -> false
+                            ) { entry ->
+                                val otherUserId = entry.savedStateHandle.get<String>("otherUserId")?.toIntOrNull() ?: 0
+                                val sourceMessageId = entry.savedStateHandle.get<Int>("sourceMessageId") ?: -1
+                                if (otherUserId <= 0) return@composable
+                                DmChatRoute(
+                                    otherUserId = otherUserId,
+                                    scrollToMessageId = if (sourceMessageId > 0) sourceMessageId else null,
+                                    navController = navController,
+                                    sharedTransitionScope = this@SharedTransitionLayout,
+                                    animatedVisibilityScope = this,
+                                )
                             }
 
-                            Logger.d(
-                                "ProfileRoute",
-                                "profile entry args: rawUserId=$userIdParam parsedUserId=$parsedUserId resolvedUserId=$userId " +
-                                    "resolvedUsername=$profileUsername sourceMessageId=$sourceMessageId fromDeepLink=$fromDeepLink " +
-                                    "useSharedElement=$useSharedElement currentRoute=${backStackEntry.destination.route}"
-                            )
+                            composable(
+                                route = DmNav.PROFILE_ROUTE,
+                                arguments = listOf(navArgument("otherUserId") { type = NavType.StringType }),
+                                enterTransition = { fadeIn(animationSpec = dmChatProfileFade) },
+                                exitTransition = { fadeOut(animationSpec = dmChatProfileFade) },
+                                popEnterTransition = { fadeIn(animationSpec = dmChatProfileFade) },
+                                popExitTransition = { fadeOut(animationSpec = dmChatProfileFade) },
+                            ) { entry ->
+                                val otherUserId = entry.savedStateHandle.get<String>("otherUserId")?.toIntOrNull() ?: 0
+                                if (otherUserId <= 0) return@composable
+                                DmProfileRoute(
+                                    otherUserId = otherUserId,
+                                    navController = navController,
+                                    sharedTransitionScope = this@SharedTransitionLayout,
+                                    animatedVisibilityScope = this,
+                                )
+                            }
 
-                            ProfileScreen(
-                                userId = userId,
-                                username = profileUsername,
-                                onBack = { navController.navigateUp() },
-                                onChat = { navController.navigate(DmNav.chatRoute(it)) },
-                                sharedTransitionScope = this@SharedTransitionLayout,
-                                animatedVisibilityScope = this@composable,
-                                useSharedElementFromNavigation = useSharedElement,
-                                sharedSourceMessageId = sourceMessageId,
-                                showErrorAsToast = fromDeepLink
-                            )
-                        }
+                            settingsSlideComposable("about", rootNavMotion) {
+                                AboutScreen()
+                            }
 
-                        val dmChatProfileFade = tween<Float>(durationMillis = 280)
+                            settingsSlideComposable(SettingsRoutes.Appearance, rootNavMotion) {
+                                AppearanceScreen(onBack = { navController.navigateUp() })
+                            }
 
-                        composable(
-                            route = DmNav.CHAT_ROUTE,
-                            arguments = listOf(
-                                navArgument("otherUserId") { type = NavType.StringType },
-                                navArgument("sourceMessageId") { type = NavType.IntType; defaultValue = -1 },
-                            ),
-                            enterTransition = {
-                                when (initialState.destination.route) {
-                                    DmNav.PROFILE_ROUTE -> fadeIn(animationSpec = dmChatProfileFade)
-                                    else -> slideIntoContainer(Start, animationSpec = rootNavMotion)
-                                }
-                            },
-                            exitTransition = {
-                                when (targetState.destination.route) {
-                                    DmNav.PROFILE_ROUTE -> fadeOut(animationSpec = dmChatProfileFade)
-                                    else -> slideOutOfContainer(Start, animationSpec = rootNavMotion)
-                                }
-                            },
-                            popEnterTransition = {
-                                when (initialState.destination.route) {
-                                    DmNav.PROFILE_ROUTE -> fadeIn(animationSpec = dmChatProfileFade)
-                                    else -> slideIntoContainer(End, animationSpec = rootNavMotion)
-                                }
-                            },
-                            popExitTransition = {
-                                when (targetState.destination.route) {
-                                    DmNav.PROFILE_ROUTE -> fadeOut(animationSpec = dmChatProfileFade)
-                                    else -> slideOutOfContainer(End, animationSpec = rootNavMotion)
-                                }
-                            },
-                        ) { entry ->
-                            val otherUserId = entry.savedStateHandle.get<String>("otherUserId")?.toIntOrNull() ?: 0
-                            val sourceMessageId = entry.savedStateHandle.get<Int>("sourceMessageId") ?: -1
-                            if (otherUserId <= 0) return@composable
-                            DmChatRoute(
-                                otherUserId = otherUserId,
-                                scrollToMessageId = if (sourceMessageId > 0) sourceMessageId else null,
-                                navController = navController,
-                                sharedTransitionScope = this@SharedTransitionLayout,
-                                animatedVisibilityScope = this,
-                            )
-                        }
+                            settingsSlideComposable(SettingsRoutes.Notifications, rootNavMotion) {
+                                NotificationsScreen(onBack = { navController.navigateUp() })
+                            }
 
-                        composable(
-                            route = DmNav.PROFILE_ROUTE,
-                            arguments = listOf(navArgument("otherUserId") { type = NavType.StringType }),
-                            enterTransition = { fadeIn(animationSpec = dmChatProfileFade) },
-                            exitTransition = { fadeOut(animationSpec = dmChatProfileFade) },
-                            popEnterTransition = { fadeIn(animationSpec = dmChatProfileFade) },
-                            popExitTransition = { fadeOut(animationSpec = dmChatProfileFade) },
-                        ) { entry ->
-                            val otherUserId = entry.savedStateHandle.get<String>("otherUserId")?.toIntOrNull() ?: 0
-                            if (otherUserId <= 0) return@composable
-                            DmProfileRoute(
-                                otherUserId = otherUserId,
-                                navController = navController,
-                                sharedTransitionScope = this@SharedTransitionLayout,
-                                animatedVisibilityScope = this,
-                            )
-                        }
+                            settingsSlideComposable(SettingsRoutes.Devices, rootNavMotion) {
+                                DevicesScreen(onBack = { navController.navigateUp() })
+                            }
 
-                        settingsSlideComposable("about", rootNavMotion) {
-                            AboutScreen()
-                        }
+                            settingsSlideComposable(SettingsRoutes.SecurityPasswordFlow, rootNavMotion) {
+                                SettingsSecurityPasswordFlowScreen(
+                                    onBack = { navController.navigateUp() },
+                                    onDonePopToHub = {
+                                        navController.popBackStack()
+                                    }
+                                )
+                            }
 
-                        val navigateToLoginClearingChat = {
-                            navController.navigate("login") {
-                                popUpTo("chat") { inclusive = true }
+                            settingsSlideComposable(SettingsRoutes.Account, rootNavMotion) {
+                                AccountScreen(
+                                    onBack = { navController.navigateUp() },
+                                    onLogout = {
+                                        navController.navigate("login") {
+                                            popUpTo("chat") { inclusive = true }
+                                        }
+                                    },
+                                    onChangePassword = { navController.navigate(SettingsRoutes.SecurityPasswordFlow) }
+                                )
                             }
                         }
 
-                        settingsSlideComposable(SettingsRoutes.Appearance, rootNavMotion) {
-                            SettingsAppearanceScreen(onBack = { navController.navigateUp() })
-                        }
-                        settingsSlideComposable(SettingsRoutes.ServerTools, rootNavMotion) {
-                            SettingsServerToolsScreen(
-                                onBack = { navController.navigateUp() },
-                                outerNav = navController
-                            )
-                        }
-                        settingsSlideComposable(SettingsRoutes.Notifications, rootNavMotion) {
-                            SettingsNotificationsScreen(onBack = { navController.navigateUp() })
-                        }
-                        settingsSlideComposable(SettingsRoutes.Devices, rootNavMotion) {
-                            SettingsDevicesScreen(onBack = { navController.navigateUp() })
-                        }
-                        settingsSlideComposable(SettingsRoutes.Security, rootNavMotion) {
-                            SettingsSecurityHubScreen(
-                                onBack = { navController.navigateUp() },
-                                onChangePassword = { navController.navigate(SettingsRoutes.SecurityPasswordFlow) }
-                            )
-                        }
-                        settingsSlideComposable(SettingsRoutes.SecurityPasswordFlow, rootNavMotion) {
-                            SettingsSecurityPasswordFlowScreen(
-                                onBack = { navController.navigateUp() },
-                                onDonePopToHub = {
-                                    navController.popBackStack()
-                                }
-                            )
-                        }
-                        settingsSlideComposable(SettingsRoutes.Account, rootNavMotion) {
-                            SettingsAccountScreen(
-                                onBack = { navController.navigateUp() },
-                                onLogout = navigateToLoginClearingChat,
-                                onChangePassword = { navController.navigate(SettingsRoutes.SecurityPasswordFlow) }
-                            )
-                        }
-                    }
-                        // Register only after NavHost has attached a graph; otherwise 401 during startup/call can crash.
                         DisposableEffect(navController) {
                             ApiClient.onAuthError = {
                                 Logger.d("App", "Global auth error handler triggered, navigating to login")
@@ -653,6 +635,7 @@ fun App(
                                 ApiClient.onAuthError = null
                             }
                         }
+
                         CallOverlay(Modifier.fillMaxSize())
                     }
                 }

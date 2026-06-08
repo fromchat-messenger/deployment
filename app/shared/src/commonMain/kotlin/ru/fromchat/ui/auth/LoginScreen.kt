@@ -24,7 +24,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
+import ru.fromchat.ui.components.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
@@ -41,10 +41,10 @@ import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.stringResource
 import ru.fromchat.Res
 import ru.fromchat.api.ApiClient
-import ru.fromchat.api.LoginRequest
 import ru.fromchat.api.apiRequest
-import ru.fromchat.crypto.IdentityKeyManager
+import ru.fromchat.api.schema.user.auth.LoginRequest
 import ru.fromchat.change_server
+import ru.fromchat.api.crypto.IdentityKeyManager
 import ru.fromchat.error_unexpected
 import ru.fromchat.fill_all_fields
 import ru.fromchat.login
@@ -53,7 +53,7 @@ import ru.fromchat.more
 import ru.fromchat.password
 import ru.fromchat.register_button
 import ru.fromchat.ui.LocalNavController
-import ru.fromchat.ui.RowHeader
+import ru.fromchat.ui.components.RowHeader
 import ru.fromchat.username
 import ru.fromchat.welcome
 
@@ -181,7 +181,12 @@ fun LoginScreen(
                                         onLoginSuccess()
                                     }
                                 ) {
-                                    val response = ApiClient.loginRequest(LoginRequest(trimmedUsername, derived))
+                                    val response = ApiClient.loginRequest(
+                                        LoginRequest(
+                                            trimmedUsername,
+                                            derived
+                                        )
+                                    )
                                     ApiClient.bindSession(response)
                                     try {
                                         IdentityKeyManager.ensureKeysOnLogin(
