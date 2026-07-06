@@ -33,6 +33,7 @@ fun DisplayName(
             overflow = TextOverflow.Ellipsis,
             modifier = Modifier.weight(1f, fill = false),
         )
+
         if (verificationStatus != null && verificationStatus != VerificationStatus.None) {
             Spacer(Modifier.width(4.dp))
             StatusBadge(
