@@ -438,6 +438,7 @@ class DmPanel(
             )
 
             val merged = confirmed.copy(
+                client_message_id = cid.ifEmpty { confirmed.client_message_id },
                 uploadJobId = null,
                 uploadProgress = null,
                 pendingFileUri = if (isImageAttachment) localPreviewUri ?: localUri else null,

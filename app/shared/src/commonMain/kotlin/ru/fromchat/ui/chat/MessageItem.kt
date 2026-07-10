@@ -1,9 +1,15 @@
 package ru.fromchat.ui.chat
 
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -23,13 +29,15 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentWidth
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.rounded.ErrorOutline
-import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material.icons.rounded.Schedule
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -37,40 +45,39 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
-import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.LayoutCoordinates
+import androidx.compose.ui.layout.layout
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
-import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.pr0gramm3r101.utils.conditional
+import kotlin.math.roundToInt
 import org.jetbrains.compose.resources.stringResource
+import ru.fromchat.Logger
 import ru.fromchat.Res
 import ru.fromchat.api.local.cache.DecryptedImageCache
 import ru.fromchat.api.local.db.store.ProfileCache
-import ru.fromchat.ui.chat.messageSenderAvatarLabel
-import ru.fromchat.api.local.messages.formatMessageBubbleTimeLocal
+import ru.fromchat.api.local.messages.formatMessageTimeLocal
 import ru.fromchat.api.local.messages.isQueuedOutbound
 import ru.fromchat.api.schema.messages.Message
 import ru.fromchat.message_corrupted
 import ru.fromchat.message_edited_suffix
 import ru.fromchat.message_reply_jump_cd
+import ru.fromchat.message_reply_photo
 import ru.fromchat.message_send_failed
-import ru.fromchat.ui.chat.components.getMessageGradient
-import ru.fromchat.ui.chat.components.getReplyMessageGradient
 import ru.fromchat.ui.chat.utils.imageAspectRatioForMessage
 import ru.fromchat.ui.chat.utils.imageAttachmentKey
 import ru.fromchat.ui.components.Text
-import ru.fromchat.ui.isAppInDarkTheme
 import ru.fromchat.ui.profile.StatusBadge
 import ru.fromchat.ui.profile.resolveVerificationStatus
 
@@ -97,6 +104,30 @@ private fun isMessageCorrupted(message: Message): Boolean {
     }
 }
 
+/**
+ * Scales layout height with the enter animation so the list pushes older
+ * messages up in real time. Visual scale is applied separately via graphicsLayer
+ * on the bubble (with a correct transform origin).
+ */
+private fun Modifier.enterLayoutHeight(
+    scale: Float,
+    minHeightPx: Int,
+    active: Boolean,
+): Modifier {
+    if (!active) return this
+    return layout { measurable, constraints ->
+        val placeable = measurable.measure(constraints)
+        val layoutScale = scale.coerceIn(0f, 1f)
+        val h = (placeable.height * layoutScale).roundToInt().coerceAtLeast(
+            if (layoutScale > 0f) minHeightPx else 0,
+        )
+        // Anchor to the bottom of the allocated slot (reverseLayout chat).
+        layout(placeable.width, h) {
+            placeable.placeRelative(0, h - placeable.height)
+        }
+    }
+}
+
 @Composable
 fun MessageItem(
     message: Message,
@@ -118,17 +149,24 @@ fun MessageItem(
     onReplyClick: ((Int) -> Unit)? = null,
     highlightMessageId: Int? = null,
     highlightFading: Boolean = false,
+    group: MessageGroupInfo = MessageGroupInfo(
+        hasSameAuthorAbove = false,
+        hasSameAuthorBelow = false,
+    ),
+    showTimestamp: Boolean = true,
+    onBubbleTap: (() -> Unit)? = null,
+    enterAnimationRole: EnterAnimationRole = EnterAnimationRole.None,
 ) {
-    // Cache derived values per message to avoid recomputing in every recomposition.
     val isCorrupted = remember(message.files, message.fileThumbnails, message.dmEnvelope) {
         isMessageCorrupted(message)
     }
     val formattedTime = remember(message.timestamp) {
-        formatMessageBubbleTimeLocal(message.timestamp)
+        formatMessageTimeLocal(message.timestamp)
     }
     val corruptedBody = stringResource(Res.string.message_corrupted)
     val editedSuffix = stringResource(Res.string.message_edited_suffix)
     val sendFailedLabel = stringResource(Res.string.message_send_failed)
+    val replyPhotoLabel = stringResource(Res.string.message_reply_photo)
     val displayUsername = messageDisplayUsername(message, currentUserId)
     val senderProfile = ProfileCache.get(message.user_id)
     val avatarPictureUrl = senderProfile?.profilePicture?.takeIf { it.isNotBlank() }
@@ -137,9 +175,6 @@ fun MessageItem(
     val senderVerificationStatus = resolveVerificationStatus(message.user_id, message)
     val isDeletedSender = messageSenderIsDeleted(message, currentUserId)
     val replyRef = message.reply_to
-
-    // No AnimatedVisibility here: visible=true still ran enter transitions for every item on first
-    // composition (N messages ⇒ N concurrent animations + huge JIT), causing main-thread jank.
 
     var isPressed by remember { mutableStateOf(false) }
     var avatarPressed by remember(message.id) { mutableStateOf(false) }
@@ -194,6 +229,111 @@ fun MessageItem(
     )
     val replyJumpCd = stringResource(Res.string.message_reply_jump_cd)
 
+    // One-shot enter owned by this composition. Keyed off the message identity so
+    // LazyColumn reuse never carries a finished enter into a brand-new bubble.
+    val enterIdentity = message.client_message_id?.trim().orEmpty().ifEmpty {
+        "i:${message.id}:${message.timestamp}"
+    }
+    val startsAsNew = enterAnimationRole == EnterAnimationRole.NewMessage
+    var enterStarted by remember(enterIdentity) { mutableStateOf(startsAsNew) }
+    var enterFinished by remember(enterIdentity) { mutableStateOf(!startsAsNew) }
+    val enterScale = remember(enterIdentity) {
+        Animatable(if (startsAsNew) 0f else 1f)
+    }
+    val timestampForceAlpha = remember(enterIdentity) { Animatable(1f) }
+    val isNewEnterRole = enterAnimationRole == EnterAnimationRole.NewMessage
+    LaunchedEffect(enterIdentity, enterAnimationRole, showTimestamp) {
+        Logger.d(
+            "EnterAnim",
+            "role_or_ts id=${message.id} identity=${enterIdentity.take(12)} " +
+                "role=${enterAnimationRole.name} showTs=$showTimestamp " +
+                "groupLast=${group.isLastInGroup} enterStarted=$enterStarted " +
+                "enterFinished=$enterFinished scale=${enterScale.value}",
+        )
+    }
+    LaunchedEffect(enterIdentity, isNewEnterRole) {
+        if (isNewEnterRole && !enterStarted) {
+            enterStarted = true
+            enterFinished = false
+            enterScale.snapTo(0f)
+        }
+    }
+    val runEnterAnimation = enterStarted && !enterFinished
+    // Single effect: start the spring as soon as this bubble is marked for enter.
+    LaunchedEffect(enterIdentity, runEnterAnimation) {
+        if (!runEnterAnimation) return@LaunchedEffect
+        Logger.d(
+            "EnterAnim",
+            "spring_start identity=${enterIdentity.take(12)} " +
+                "scaleBefore=${enterScale.value} role=${enterAnimationRole.name}",
+        )
+        if (enterScale.value > 0.001f) enterScale.snapTo(0f)
+        enterScale.animateTo(
+            1f,
+            spring(
+                dampingRatio = Spring.DampingRatioNoBouncy,
+                stiffness = Spring.StiffnessMediumLow,
+            ),
+        )
+        enterFinished = true
+        Logger.d(
+            "EnterAnim",
+            "spring_end identity=${enterIdentity.take(12)} role=${enterAnimationRole.name}",
+        )
+    }
+    LaunchedEffect(enterIdentity, enterAnimationRole) {
+        when (enterAnimationRole) {
+            EnterAnimationRole.PreviousLast -> {
+                // Fade in parallel with the new bubble spring (same frame as enqueue).
+                if (timestampForceAlpha.value > 0.01f) {
+                    timestampForceAlpha.animateTo(0f, tween(80))
+                }
+            }
+            EnterAnimationRole.NewMessage -> Unit
+            else -> {
+                if (!runEnterAnimation && enterScale.value != 1f) {
+                    enterScale.snapTo(1f)
+                }
+                timestampForceAlpha.snapTo(1f)
+            }
+        }
+    }
+
+    val bubbleShape = rememberAnimatedBubbleShape(isAuthor, group)
+    val onPrimary = MaterialTheme.colorScheme.onPrimary
+    val onSurface = MaterialTheme.colorScheme.onSurface
+    val contentColor = if (isAuthor) onPrimary else onSurface
+    val density = LocalDensity.current
+    val minEnterHeightPx = remember(density) { with(density) { 4.dp.roundToPx() } }
+    val showAvatarSlot = !isAuthor && showUsername
+    val showAvatar = showAvatarSlot && group.isLastInGroup
+    val showUsernameInBubble = showUsername && !isAuthor && group.isFirstInGroup
+
+    val isPendingOutbound = message.id < 0 && message.files.isNullOrEmpty()
+    val sendFailed = isPendingOutbound && !message.uploadError.isNullOrBlank()
+    val showScheduleIcon =
+        runEnterAnimation &&
+            isAuthor &&
+            isPendingOutbound &&
+            !sendFailed
+    // Group membership drives timestamp space; PreviousLast fades alpha while
+    // showTimestamp is still held true by ChatScreen until this role arrives.
+    val timestampVisible = when {
+        enterAnimationRole == EnterAnimationRole.PreviousLast -> false
+        showScheduleIcon || sendFailed -> true
+        else -> showTimestamp
+    }
+    val timestampAlpha =
+        if (enterAnimationRole == EnterAnimationRole.PreviousLast) {
+            timestampForceAlpha.value
+        } else {
+            1f
+        }
+    val timestampTakesSpace = timestampVisible
+    val metaColor = MaterialTheme.colorScheme.onSurfaceVariant.copy(alpha = 0.7f)
+    val enterTransformOrigin =
+        if (isAuthor) TransformOrigin(1f, 1f) else TransformOrigin(0f, 1f)
+
     Box(modifier = modifier.fillMaxWidth()) {
         if (highlightAlpha > 0f) {
             Box(
@@ -210,556 +350,684 @@ fun MessageItem(
         Row(
             modifier = Modifier
                 .fillMaxWidth()
-                .padding(horizontal = 8.dp, vertical = 4.dp),
+                .padding(horizontal = 8.dp)
+                .enterLayoutHeight(
+                    scale = enterScale.value,
+                    minHeightPx = minEnterHeightPx,
+                    active = runEnterAnimation,
+                ),
             horizontalArrangement = if (isAuthor) Arrangement.End else Arrangement.Start,
             verticalAlignment = Alignment.Bottom,
         ) {
-        if (!isAuthor && showUsername) {
-            Box(
-                modifier = Modifier
-                    .graphicsLayer(
-                        scaleX = avatarScale,
-                        scaleY = avatarScale,
-                        transformOrigin = TransformOrigin.Center
-                    )
-                    .pointerInput(onUsernameClick, isContextMenuOpen) {
-                        detectTapGestures(
-                            onPress = {
-                                if (!isContextMenuOpen) avatarPressed = true
-                                try {
-                                    awaitRelease()
-                                } finally {
-                                    if (!isContextMenuOpen) avatarPressed = false
-                                }
-                            },
-                            onTap = { onUsernameClick?.invoke() }
+            if (showAvatarSlot) {
+                if (showAvatar) {
+                    Box(
+                        modifier = Modifier
+                            .graphicsLayer(
+                                scaleX = avatarScale,
+                                scaleY = avatarScale,
+                                transformOrigin = TransformOrigin.Center
+                            )
+                            .pointerInput(onUsernameClick, isContextMenuOpen) {
+                                detectTapGestures(
+                                    onPress = {
+                                        if (!isContextMenuOpen) avatarPressed = true
+                                        try {
+                                            awaitRelease()
+                                        } finally {
+                                            if (!isContextMenuOpen) avatarPressed = false
+                                        }
+                                    },
+                                    onTap = { onUsernameClick?.invoke() }
+                                )
+                            }
+                    ) {
+                        Avatar(
+                            profilePictureUrl = avatarPictureUrl,
+                            displayName = avatarDisplayName,
+                            modifier = Modifier.size(32.dp),
+                            isDeletedUser = isDeletedSender,
+                            userId = message.user_id,
                         )
                     }
-            ) {
-                Avatar(
-                    profilePictureUrl = avatarPictureUrl,
-                    displayName = avatarDisplayName,
-                    modifier = Modifier.size(32.dp),
-                    isDeletedUser = isDeletedSender,
-                    userId = message.user_id,
-                )
+                } else {
+                    Spacer(modifier = Modifier.size(32.dp))
+                }
+                Spacer(modifier = Modifier.width(8.dp))
             }
 
-            Spacer(modifier = Modifier.width(8.dp))
-        }
-
-        BoxWithConstraints(
-            modifier = Modifier.weight(1f, fill = false)
-        ) {
-            // Allow bubbles to grow up to 70% of the available row width
-            val maxBubbleWidth = maxWidth * 0.7f
-
-            Column(
-                horizontalAlignment = if (isAuthor) Alignment.End else Alignment.Start
+            BoxWithConstraints(
+                modifier = Modifier.weight(1f, fill = false)
             ) {
-                // Message bubble
-                val isDark = isAppInDarkTheme()
-                val pendingIsImage = when {
-                    message.pendingFilename?.isNotBlank() == true -> isImageFilename(message.pendingFilename)
-                    message.pendingFileUri != null -> isImageFilename(
-                        message.pendingFileUri.substringAfterLast('/').substringBefore('?')
-                    )
-                    else -> false
-                }
-                val pendingHasOutboundFile = message.pendingFileUri != null &&
-                    message.files.isNullOrEmpty() &&
-                    !pendingIsImage
-                val uploadFailed = !message.uploadError.isNullOrBlank()
-                val canCancelUpload = message.isQueuedOutbound() && isAuthor &&
-                    !uploadFailed &&
-                    (pendingIsImage || pendingHasOutboundFile) &&
-                    (message.uploadProgress != null || message.pendingFileUri != null)
-                val onCancelUpload: (() -> Unit)? = if (canCancelUpload && onCancelOutboundAttachment != null) {
-                    { onCancelOutboundAttachment.invoke(message) }
-                } else {
-                    null
-                }
-                val onRetryUpload: (() -> Unit)? = if (uploadFailed && onRetryOutboundAttachment != null) {
-                    { onRetryOutboundAttachment.invoke(message) }
-                } else {
-                    null
-                }
-                val firstContentIsImage = (
-                    !showUsername || isAuthor
-                ) && message.reply_to == null && (
-                    pendingIsImage || message.files?.firstOrNull()?.let { isImageFilename(it.name) } == true
-                )
+                val maxBubbleWidth = maxWidth * 0.7f
 
-                val bubbleShape = RoundedCornerShape(
-                    topStart = 20.dp,
-                    topEnd = 20.dp,
-                    bottomStart = if (isAuthor) 20.dp else 8.dp,
-                    bottomEnd = if (isAuthor) 8.dp else 20.dp
-                )
-
-                val bubblePressAndLongPress =
-                    if (isContextMenuOpen) Modifier
-                    else Modifier.pointerInput(isContextMenuOpen, message.id) {
-                        detectTapGestures(
-                            onPress = {
-                                isPressed = true
-                                try {
-                                    awaitRelease()
-                                } finally {
-                                    isPressed = false
-                                }
-                            },
-                            onLongPress = { localOffset ->
-                                onTapPosition(bubbleBodyPositionInRoot + localOffset)
-                                onLongPress()
-                            }
-                        )
-                    }
-
-                val slackRowPressAndLongPress =
-                    if (isContextMenuOpen) Modifier
-                    else Modifier.pointerInput(isContextMenuOpen, message.id) {
-                        detectTapGestures(
-                            onPress = {
-                                isPressed = true
-                                try {
-                                    awaitRelease()
-                                } finally {
-                                    isPressed = false
-                                }
-                            },
-                            onLongPress = { localOffset ->
-                                val coords = slackRowLayoutCoords
-                                if (coords != null && coords.isAttached) {
-                                    onTapPosition(coords.localToRoot(localOffset))
-                                } else {
-                                    onTapPosition(bubbleBodyPositionInRoot + localOffset)
-                                }
-                                onLongPress()
-                            }
-                        )
-                    }
-
-                // Full-width hit target so pressing empty row space still scales the bubble & long-press menu.
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .onGloballyPositioned { slackRowLayoutCoords = it }
-                        .then(slackRowPressAndLongPress)
+                Column(
+                    horizontalAlignment = if (isAuthor) Alignment.End else Alignment.Start
                 ) {
-                // graphicsLayer must wrap clip/shadow/background so the whole bubble scales on press;
-                // placing it only after background scaled the children but left the bubble chrome unscaled.
-                Box(
-                    modifier = Modifier
-                        .align(if (isAuthor) Alignment.BottomEnd else Alignment.BottomStart)
-                        .widthIn(max = maxBubbleWidth)
-                        .graphicsLayer(
-                            scaleX = scale,
-                            scaleY = scale,
-                            transformOrigin = TransformOrigin.Center
+                    val pendingIsImage = when {
+                        message.pendingFilename?.isNotBlank() == true ->
+                            isImageFilename(message.pendingFilename)
+                        message.pendingFileUri != null -> isImageFilename(
+                            message.pendingFileUri.substringAfterLast('/').substringBefore('?')
                         )
-                        .clip(bubbleShape)
-                        .conditional(
-                            isAuthor,
-                            `if` = {
-                                it
-                                    .shadow(
-                                        elevation = 8.dp,
-                                        shape = RoundedCornerShape(
-                                            topStart = 20.dp,
-                                            topEnd = 20.dp,
-                                            bottomStart = 20.dp,
-                                            bottomEnd = 8.dp
-                                        ),
-                                        spotColor = if (isDark) Color(0x66000000) else Color(0x33000000)
-                                    )
-                                    .background(getMessageGradient(isDark))
-                            },
-                            `else` = {
-                                background(MaterialTheme.colorScheme.surfaceContainerHighest)
-                            }
-                        )
-                        .padding(top = if (firstContentIsImage) 0.dp else 6.dp)
-                ) {
-                    val bubbleColumnModifier =
-                        if (showUsername && !isAuthor) Modifier.width(IntrinsicSize.Max)
-                        else Modifier
-                    Column(modifier = bubbleColumnModifier) {
-                        if (showUsername && !isAuthor) {
-                            val usernameShape = RoundedCornerShape(6.dp)
-                            val usernameOutset = Modifier.padding(start = 8.dp, end = 8.dp, bottom = 4.dp)
-                            val usernameInset = Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
-                            if (onUsernameClick != null) {
-                                val usernameInteraction = remember(message.id) { MutableInteractionSource() }
-                                Box(
-                                    modifier = usernameOutset
-                                        .clip(usernameShape)
-                                        .clickable(
-                                            interactionSource = usernameInteraction,
-                                            indication = LocalIndication.current,
-                                            onClick = onUsernameClick
-                                        )
-                                ) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                        modifier = usernameInset,
-                                    ) {
-                                        Text(
-                                            text = displayUsername,
-                                            style = MaterialTheme.typography.labelMedium,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = MaterialTheme.colorScheme.primary,
-                                        )
-                                        StatusBadge(
-                                            verificationStatus = senderVerificationStatus,
-                                            size = 14.dp,
-                                        )
-                                    }
-                                }
-                            } else {
-                                Box(modifier = usernameOutset) {
-                                    Row(
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(4.dp),
-                                        modifier = usernameInset,
-                                    ) {
-                                        Text(
-                                            text = displayUsername,
-                                            style = MaterialTheme.typography.labelMedium,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = MaterialTheme.colorScheme.primary,
-                                        )
-                                        StatusBadge(
-                                            verificationStatus = senderVerificationStatus,
-                                            size = 14.dp,
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        val gestureWidthModifier =
-                            if (showUsername && !isAuthor) Modifier.fillMaxWidth()
-                            else Modifier
-                        Box(
-                            modifier = gestureWidthModifier
-                                .onGloballyPositioned { coordinates ->
-                                    bubbleBodyPositionInRoot = coordinates.positionInRoot()
-                                }
-                                .then(bubblePressAndLongPress)
-                        ) {
-                            Column {
-                        // Reply preview
-                        replyRef?.let { replyToMsg ->
-                            val replyName = messageDisplayUsername(replyToMsg, currentUserId)
-                            val replyTapEnabled = onReplyClick != null && replyToMsg.id > 0
-                            val replyPressModifier =
-                                if (replyTapEnabled && !isContextMenuOpen) {
-                                    Modifier.pointerInput(replyToMsg.id, isContextMenuOpen) {
-                                        detectTapGestures(
-                                            onPress = {
-                                                replyPressed = true
-                                                try {
-                                                    awaitRelease()
-                                                } finally {
-                                                    replyPressed = false
-                                                }
-                                            },
-                                            onTap = { onReplyClick.invoke(replyToMsg.id) },
-                                        )
-                                    }
-                                } else {
-                                    Modifier
-                                }
-                            Box(
-                                Modifier
-                                    .padding(bottom = 4.dp, start = 6.dp, end = 6.dp)
-                                    .graphicsLayer(
-                                        scaleX = replyScale,
-                                        scaleY = replyScale,
-                                        transformOrigin = TransformOrigin.Center,
-                                    )
-                                    .then(replyPressModifier)
-                                    .semantics {
-                                        if (replyTapEnabled) contentDescription = replyJumpCd
-                                    },
-                            ) {
-                                Row(
-                                    modifier = Modifier
-                                        .clip(RoundedCornerShape(12.dp))
-                                        .fillMaxWidth()
-                                        .height(IntrinsicSize.Min)
-                                        .conditional(
-                                            isAuthor,
-                                            `if` = {
-                                                background(getReplyMessageGradient(isDark))
-                                            },
-                                            `else` = {
-                                                background(MaterialTheme.colorScheme.surfaceVariant)
-                                            }
-                                        )
-                                ) {
-                                    Box(
-                                        Modifier
-                                            .background(MaterialTheme.colorScheme.primary)
-                                            .width(3.dp)
-                                            .fillMaxHeight()
-                                    )
-
-                                    Column(
-                                        Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
-                                    ) {
-                                        Text(
-                                            text = replyName,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = FontWeight.SemiBold,
-                                            color = MaterialTheme.colorScheme.primary,
-                                            fontSize = 11.sp
-                                        )
-                                        Text(
-                                            text = replyToMsg.content.take(50) + if (replyToMsg.content.length > 50) "..." else "",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                                            fontSize = 12.sp,
-                                            maxLines = 1
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        // Attachments (images/files) or corrupted message
-                        if (isCorrupted) {
-                            Text(
-                                text = corruptedBody,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = if (isAuthor) {
-                                    Color.White.copy(alpha = 0.8f)
-                                } else {
-                                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.8f)
-                                },
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp)
-                            )
+                        else -> false
+                    }
+                    val pendingHasOutboundFile = message.pendingFileUri != null &&
+                        message.files.isNullOrEmpty() &&
+                        !pendingIsImage
+                    val uploadFailed = !message.uploadError.isNullOrBlank()
+                    val canCancelUpload = message.isQueuedOutbound() && isAuthor &&
+                        !uploadFailed &&
+                        (pendingIsImage || pendingHasOutboundFile) &&
+                        (message.uploadProgress != null || message.pendingFileUri != null)
+                    val onCancelUpload: (() -> Unit)? =
+                        if (canCancelUpload && onCancelOutboundAttachment != null) {
+                            { onCancelOutboundAttachment.invoke(message) }
                         } else {
-                            val primaryFile = message.files?.firstOrNull()
-                            val primaryIsImage = primaryFile != null && isImageFilename(primaryFile.name)
-                            val showPrimaryImageSlot = pendingIsImage || primaryIsImage
-                            val showPrimaryFileSlot = pendingHasOutboundFile ||
-                                (primaryFile != null && !primaryIsImage)
-                            if (showPrimaryImageSlot) {
-                                val imageKey = imageAttachmentKey(message, 0)
-                                val awaitingServer = message.id < 0 && message.files.isNullOrEmpty()
-                                val isOutboundPendingImage = awaitingServer && pendingIsImage
-                                val awaitingServerAck = isOutboundPendingImage &&
-                                    !uploadFailed &&
-                                    message.uploadProgress == null
-                                AttachmentPreview(
-                                    file = primaryFile,
-                                    dmEnvelope = message.dmEnvelope,
-                                    currentUserId = currentUserId,
-                                    pendingFileUri = message.pendingFileUri,
-                                    pendingFilename = message.pendingFilename,
-                                    isUploading = isOutboundPendingImage && !uploadFailed,
-                                    awaitingServerAck = awaitingServerAck,
-                                    uploadProgress = message.uploadProgress,
-                                    uploadError = message.uploadError,
-                                    onRetryUpload = onRetryUpload,
-                                    fileThumbnail = message.fileThumbnails?.firstOrNull()?.takeIf { it.isNotBlank() },
-                                    fileAspectRatio = imageAspectRatioForMessage(
-                                        fileAspectRatios = message.fileAspectRatios,
-                                        fileDimensions = message.fileDimensions,
-                                        pendingFileAspectRatio = message.pendingFileAspectRatio,
-                                        fileIndex = 0,
-                                        confirmed = message.id > 0,
-                                        hasLocalPreview = DecryptedImageCache.isDecryptedImageCacheUri(
-                                            message.pendingFileUri,
-                                        ),
-                                    ),
-                                    fileSizeBytes = message.fileSizes?.firstOrNull(),
-                                    messageId = message.id,
-                                    fileIndex = 0,
-                                    clientMessageId = message.client_message_id,
-                                    onImageClick = { onImageClick?.invoke(message, 0) },
-                                    onImageBounds = if (onImageBounds != null) {
-                                        { rect -> onImageBounds.invoke(imageKey, rect) }
-                                    } else {
-                                        null
-                                    },
-                                    isExpanded = expandedImageKey != null &&
-                                        expandedImageKey == imageKey &&
-                                        !isImageClosing,
-                                    isAuthor = isAuthor,
-                                    messageLabel = message.content,
-                                    onCancelUpload = onCancelUpload,
-                                    modifier = if (firstContentIsImage) {
-                                        Modifier.padding(all = 2.dp)
-                                    } else {
-                                        Modifier.padding(horizontal = 2.dp, vertical = 4.dp)
-                                    }
-                                )
-                            }
-                            if (showPrimaryFileSlot) {
-                                val awaitingServer = message.id < 0 && message.files.isNullOrEmpty()
-                                val isOutboundPendingFile = awaitingServer && pendingHasOutboundFile
-                                val awaitingServerAck = isOutboundPendingFile &&
-                                    !uploadFailed &&
-                                    message.uploadProgress == null
-                                AttachmentPreview(
-                                    file = primaryFile,
-                                    dmEnvelope = message.dmEnvelope,
-                                    currentUserId = currentUserId,
-                                    pendingFileUri = message.pendingFileUri,
-                                    pendingFilename = message.pendingFilename,
-                                    isUploading = isOutboundPendingFile && !uploadFailed,
-                                    awaitingServerAck = awaitingServerAck,
-                                    uploadProgress = message.uploadProgress,
-                                    uploadError = message.uploadError,
-                                    onRetryUpload = onRetryUpload,
-                                    fileSizeBytes = message.fileSizes?.firstOrNull(),
-                                    messageId = message.id,
-                                    fileIndex = 0,
-                                    clientMessageId = message.client_message_id,
-                                    isAuthor = isAuthor,
-                                    messageLabel = message.content,
-                                    onCancelUpload = onCancelUpload,
-                                    modifier = Modifier.padding(horizontal = 4.dp, vertical = 4.dp),
-                                )
-                            }
-                            message.files?.forEachIndexed { index, file ->
-                                if (index == 0 && showPrimaryImageSlot && isImageFilename(file.name)) {
-                                    return@forEachIndexed
-                                }
-                                if (index == 0 && showPrimaryFileSlot && !isImageFilename(file.name)) {
-                                    return@forEachIndexed
-                                }
-                                val isImage = isImageFilename(file.name)
-                                val imageKey = if (isImage) imageAttachmentKey(message, index) else null
-                                val isFirstImage = index == 0 && isImage
-                                AttachmentPreview(
-                                    file = file,
-                                    dmEnvelope = message.dmEnvelope,
-                                    currentUserId = currentUserId,
-                                    pendingFileUri = if (index == 0) message.pendingFileUri else null,
-                                    pendingFilename = if (index == 0) message.pendingFilename else null,
-                                    isUploading = false,
-                                    fileThumbnail = message.fileThumbnails?.getOrNull(index)?.takeIf { it.isNotBlank() },
-                                    fileAspectRatio = imageAspectRatioForMessage(
-                                        fileAspectRatios = message.fileAspectRatios,
-                                        fileDimensions = message.fileDimensions,
-                                        pendingFileAspectRatio = message.pendingFileAspectRatio,
-                                        fileIndex = index,
-                                        confirmed = message.id > 0,
-                                        hasLocalPreview = index == 0 &&
-                                                DecryptedImageCache.isDecryptedImageCacheUri(message.pendingFileUri),
-                                    ),
-                                    fileSizeBytes = message.fileSizes?.getOrNull(index),
-                                    messageId = message.id,
-                                    fileIndex = index,
-                                    clientMessageId = message.client_message_id,
-                                    onImageClick = if (isImage) { { onImageClick?.invoke(message, index) } } else null,
-                                    onImageBounds = if (isImage && imageKey != null && onImageBounds != null) {
-                                        { rect -> onImageBounds.invoke(imageKey, rect) }
-                                    } else null,
-                                    isExpanded = isImage && expandedImageKey != null && expandedImageKey == imageKey && !isImageClosing,
-                                    isAuthor = isAuthor,
-                                    messageLabel = message.content,
-                                    onCancelUpload = onCancelUpload,
-                                    modifier = if (isFirstImage && firstContentIsImage && isImage) {
-                                        Modifier.padding(all = 2.dp)
-                                    } else {
-                                        Modifier.padding(
-                                            horizontal = if (isImage) 2.dp else 4.dp,
-                                            vertical = if (isImage) 2.dp else 4.dp
-                                        )
-                                    }
-                                )
-                            }
+                            null
                         }
-                        if (
-                            message.content.isNotBlank() &&
-                            !isCorrupted &&
-                            !isFilenameOnlyMessageCaption(message)
+                    val onRetryUpload: (() -> Unit)? =
+                        if (uploadFailed && onRetryOutboundAttachment != null) {
+                            { onRetryOutboundAttachment.invoke(message) }
+                        } else {
+                            null
+                        }
+                    val firstContentIsImage = (
+                        !showUsername || isAuthor
+                    ) && message.reply_to == null && (
+                        pendingIsImage ||
+                            message.files?.firstOrNull()?.let { isImageFilename(it.name) } == true
+                    )
+
+                    val bubblePressAndLongPress =
+                        if (isContextMenuOpen) Modifier
+                        else Modifier.pointerInput(
+                            isContextMenuOpen,
+                            message.id,
+                            onBubbleTap,
                         ) {
-                            Text(
-                                text = message.content,
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = if (isAuthor) {
-                                    Color.White
-                                } else {
-                                    MaterialTheme.colorScheme.onSurface
+                            detectTapGestures(
+                                onPress = {
+                                    isPressed = true
+                                    try {
+                                        awaitRelease()
+                                    } finally {
+                                        isPressed = false
+                                    }
                                 },
-                                modifier = Modifier.padding(horizontal = 12.dp)
+                                onTap = { onBubbleTap?.invoke() },
+                                onLongPress = { localOffset ->
+                                    onTapPosition(bubbleBodyPositionInRoot + localOffset)
+                                    onLongPress()
+                                }
                             )
                         }
 
-                        // Timestamp, sending indicator, and edited indicator
-                        val isPendingOutbound = message.id < 0 && message.files.isNullOrEmpty()
-                        val sendFailed = isPendingOutbound && !message.uploadError.isNullOrBlank()
+                    val slackRowPressAndLongPress =
+                        if (isContextMenuOpen) Modifier
+                        else Modifier.pointerInput(
+                            isContextMenuOpen,
+                            message.id,
+                            onBubbleTap,
+                        ) {
+                            detectTapGestures(
+                                onPress = {
+                                    isPressed = true
+                                    try {
+                                        awaitRelease()
+                                    } finally {
+                                        isPressed = false
+                                    }
+                                },
+                                onTap = { onBubbleTap?.invoke() },
+                                onLongPress = { localOffset ->
+                                    val coords = slackRowLayoutCoords
+                                    if (coords != null && coords.isAttached) {
+                                        onTapPosition(coords.localToRoot(localOffset))
+                                    } else {
+                                        onTapPosition(bubbleBodyPositionInRoot + localOffset)
+                                    }
+                                    onLongPress()
+                                }
+                            )
+                        }
+
+                    Box(
+                        modifier = Modifier
+                            .onGloballyPositioned { slackRowLayoutCoords = it }
+                            .then(slackRowPressAndLongPress)
+                    ) {
+                        Column(
+                            horizontalAlignment =
+                                if (isAuthor) Alignment.End else Alignment.Start,
+                            modifier = Modifier.graphicsLayer {
+                                if (runEnterAnimation) {
+                                    val s = enterScale.value
+                                    scaleX = s
+                                    scaleY = s
+                                    transformOrigin = enterTransformOrigin
+                                    alpha = if (s <= 0.001f) 0f else 1f
+                                }
+                            },
+                        ) {
+                        Box(
+                            modifier = Modifier
+                                .widthIn(max = maxBubbleWidth)
+                                .wrapContentWidth()
+                                .graphicsLayer(
+                                    scaleX = scale,
+                                    scaleY = scale,
+                                    transformOrigin = TransformOrigin.Center
+                                )
+                                .clip(bubbleShape)
+                                .background(
+                                    if (isAuthor) {
+                                        MaterialTheme.colorScheme.primary
+                                    } else {
+                                        MaterialTheme.colorScheme.surfaceContainerHigh
+                                    }
+                                )
+                                .padding(
+                                    top = if (firstContentIsImage) 0.dp else 8.dp,
+                                    bottom = 8.dp,
+                                )
+                        ) {
+                            Column(modifier = Modifier.width(IntrinsicSize.Max)) {
+                                if (showUsernameInBubble) {
+                                    val usernameShape = RoundedCornerShape(6.dp)
+                                    val usernameOutset =
+                                        Modifier.padding(start = 8.dp, end = 8.dp, bottom = 4.dp)
+                                    val usernameInset =
+                                        Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
+                                    if (onUsernameClick != null) {
+                                        val usernameInteraction =
+                                            remember(message.id) { MutableInteractionSource() }
+                                        Box(
+                                            modifier = usernameOutset
+                                                .clip(usernameShape)
+                                                .clickable(
+                                                    interactionSource = usernameInteraction,
+                                                    indication = LocalIndication.current,
+                                                    onClick = onUsernameClick
+                                                )
+                                        ) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                                modifier = usernameInset,
+                                            ) {
+                                                Text(
+                                                    text = displayUsername,
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                )
+                                                StatusBadge(
+                                                    verificationStatus = senderVerificationStatus,
+                                                    size = 14.dp,
+                                                )
+                                            }
+                                        }
+                                    } else {
+                                        Box(modifier = usernameOutset) {
+                                            Row(
+                                                verticalAlignment = Alignment.CenterVertically,
+                                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                                modifier = usernameInset,
+                                            ) {
+                                                Text(
+                                                    text = displayUsername,
+                                                    style = MaterialTheme.typography.labelMedium,
+                                                    fontWeight = FontWeight.SemiBold,
+                                                    color = MaterialTheme.colorScheme.primary,
+                                                )
+                                                StatusBadge(
+                                                    verificationStatus = senderVerificationStatus,
+                                                    size = 14.dp,
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+
+                                val gestureWidthModifier = Modifier.fillMaxWidth()
+                                Box(
+                                    modifier = gestureWidthModifier
+                                        .onGloballyPositioned { coordinates ->
+                                            bubbleBodyPositionInRoot = coordinates.positionInRoot()
+                                        }
+                                        .then(bubblePressAndLongPress)
+                                ) {
+                                    Column {
+                                        replyRef?.let { replyToMsg ->
+                                            MessageReplyQuote(
+                                                replyTo = replyToMsg,
+                                                isAuthor = isAuthor,
+                                                currentUserId = currentUserId,
+                                                replyScale = replyScale,
+                                                replyJumpCd = replyJumpCd,
+                                                photoLabel = replyPhotoLabel,
+                                                isContextMenuOpen = isContextMenuOpen,
+                                                onReplyClick = onReplyClick,
+                                                onReplyPressedChange = { replyPressed = it },
+                                            )
+                                        }
+
+                                        if (isCorrupted) {
+                                            Text(
+                                                text = corruptedBody,
+                                                style = MaterialTheme.typography.bodyMedium,
+                                                color = contentColor.copy(alpha = 0.8f),
+                                                modifier = Modifier.padding(
+                                                    horizontal = 12.dp,
+                                                    vertical = 8.dp,
+                                                )
+                                            )
+                                        } else {
+                                            val primaryFile = message.files?.firstOrNull()
+                                            val primaryIsImage =
+                                                primaryFile != null && isImageFilename(primaryFile.name)
+                                            val showPrimaryImageSlot = pendingIsImage || primaryIsImage
+                                            val showPrimaryFileSlot = pendingHasOutboundFile ||
+                                                (primaryFile != null && !primaryIsImage)
+                                            if (showPrimaryImageSlot) {
+                                                val imageKey = imageAttachmentKey(message, 0)
+                                                val awaitingServer =
+                                                    message.id < 0 && message.files.isNullOrEmpty()
+                                                val isOutboundPendingImage =
+                                                    awaitingServer && pendingIsImage
+                                                val awaitingServerAck = isOutboundPendingImage &&
+                                                    !uploadFailed &&
+                                                    message.uploadProgress == null
+                                                AttachmentPreview(
+                                                    file = primaryFile,
+                                                    dmEnvelope = message.dmEnvelope,
+                                                    currentUserId = currentUserId,
+                                                    pendingFileUri = message.pendingFileUri,
+                                                    pendingFilename = message.pendingFilename,
+                                                    isUploading =
+                                                        isOutboundPendingImage && !uploadFailed,
+                                                    awaitingServerAck = awaitingServerAck,
+                                                    uploadProgress = message.uploadProgress,
+                                                    uploadError = message.uploadError,
+                                                    onRetryUpload = onRetryUpload,
+                                                    fileThumbnail = message.fileThumbnails
+                                                        ?.firstOrNull()
+                                                        ?.takeIf { it.isNotBlank() },
+                                                    fileAspectRatio = imageAspectRatioForMessage(
+                                                        fileAspectRatios = message.fileAspectRatios,
+                                                        fileDimensions = message.fileDimensions,
+                                                        pendingFileAspectRatio =
+                                                            message.pendingFileAspectRatio,
+                                                        fileIndex = 0,
+                                                        confirmed = message.id > 0,
+                                                        hasLocalPreview =
+                                                            DecryptedImageCache
+                                                                .isDecryptedImageCacheUri(
+                                                                    message.pendingFileUri,
+                                                                ),
+                                                    ),
+                                                    fileSizeBytes =
+                                                        message.fileSizes?.firstOrNull(),
+                                                    messageId = message.id,
+                                                    fileIndex = 0,
+                                                    clientMessageId = message.client_message_id,
+                                                    onImageClick = {
+                                                        onImageClick?.invoke(message, 0)
+                                                    },
+                                                    onImageBounds = if (onImageBounds != null) {
+                                                        { rect ->
+                                                            onImageBounds.invoke(imageKey, rect)
+                                                        }
+                                                    } else {
+                                                        null
+                                                    },
+                                                    isExpanded = expandedImageKey != null &&
+                                                        expandedImageKey == imageKey &&
+                                                        !isImageClosing,
+                                                    isAuthor = isAuthor,
+                                                    messageLabel = message.content,
+                                                    onCancelUpload = onCancelUpload,
+                                                    messageGroup = group,
+                                                    modifier = if (firstContentIsImage) {
+                                                        Modifier.padding(all = 2.dp)
+                                                    } else {
+                                                        Modifier.padding(
+                                                            horizontal = 2.dp,
+                                                            vertical = 4.dp,
+                                                        )
+                                                    }
+                                                )
+                                            }
+                                            if (showPrimaryFileSlot) {
+                                                val awaitingServer =
+                                                    message.id < 0 && message.files.isNullOrEmpty()
+                                                val isOutboundPendingFile =
+                                                    awaitingServer && pendingHasOutboundFile
+                                                val awaitingServerAck = isOutboundPendingFile &&
+                                                    !uploadFailed &&
+                                                    message.uploadProgress == null
+                                                AttachmentPreview(
+                                                    file = primaryFile,
+                                                    dmEnvelope = message.dmEnvelope,
+                                                    currentUserId = currentUserId,
+                                                    pendingFileUri = message.pendingFileUri,
+                                                    pendingFilename = message.pendingFilename,
+                                                    isUploading =
+                                                        isOutboundPendingFile && !uploadFailed,
+                                                    awaitingServerAck = awaitingServerAck,
+                                                    uploadProgress = message.uploadProgress,
+                                                    uploadError = message.uploadError,
+                                                    onRetryUpload = onRetryUpload,
+                                                    fileSizeBytes =
+                                                        message.fileSizes?.firstOrNull(),
+                                                    messageId = message.id,
+                                                    fileIndex = 0,
+                                                    clientMessageId = message.client_message_id,
+                                                    isAuthor = isAuthor,
+                                                    messageLabel = message.content,
+                                                    onCancelUpload = onCancelUpload,
+                                                    messageGroup = group,
+                                                    modifier = Modifier.padding(
+                                                        horizontal = 4.dp,
+                                                        vertical = 4.dp,
+                                                    ),
+                                                )
+                                            }
+                                            message.files?.forEachIndexed { index, file ->
+                                                if (
+                                                    index == 0 &&
+                                                    showPrimaryImageSlot &&
+                                                    isImageFilename(file.name)
+                                                ) {
+                                                    return@forEachIndexed
+                                                }
+                                                if (
+                                                    index == 0 &&
+                                                    showPrimaryFileSlot &&
+                                                    !isImageFilename(file.name)
+                                                ) {
+                                                    return@forEachIndexed
+                                                }
+                                                val isImage = isImageFilename(file.name)
+                                                val imageKey =
+                                                    if (isImage) {
+                                                        imageAttachmentKey(message, index)
+                                                    } else {
+                                                        null
+                                                    }
+                                                val isFirstImage = index == 0 && isImage
+                                                AttachmentPreview(
+                                                    file = file,
+                                                    dmEnvelope = message.dmEnvelope,
+                                                    currentUserId = currentUserId,
+                                                    pendingFileUri =
+                                                        if (index == 0) message.pendingFileUri
+                                                        else null,
+                                                    pendingFilename =
+                                                        if (index == 0) message.pendingFilename
+                                                        else null,
+                                                    isUploading = false,
+                                                    fileThumbnail = message.fileThumbnails
+                                                        ?.getOrNull(index)
+                                                        ?.takeIf { it.isNotBlank() },
+                                                    fileAspectRatio = imageAspectRatioForMessage(
+                                                        fileAspectRatios = message.fileAspectRatios,
+                                                        fileDimensions = message.fileDimensions,
+                                                        pendingFileAspectRatio =
+                                                            message.pendingFileAspectRatio,
+                                                        fileIndex = index,
+                                                        confirmed = message.id > 0,
+                                                        hasLocalPreview = index == 0 &&
+                                                            DecryptedImageCache
+                                                                .isDecryptedImageCacheUri(
+                                                                    message.pendingFileUri,
+                                                                ),
+                                                    ),
+                                                    fileSizeBytes =
+                                                        message.fileSizes?.getOrNull(index),
+                                                    messageId = message.id,
+                                                    fileIndex = index,
+                                                    clientMessageId = message.client_message_id,
+                                                    onImageClick = if (isImage) {
+                                                        { onImageClick?.invoke(message, index) }
+                                                    } else {
+                                                        null
+                                                    },
+                                                    onImageBounds =
+                                                        if (
+                                                            isImage &&
+                                                            imageKey != null &&
+                                                            onImageBounds != null
+                                                        ) {
+                                                            { rect ->
+                                                                onImageBounds.invoke(imageKey, rect)
+                                                            }
+                                                        } else {
+                                                            null
+                                                        },
+                                                    isExpanded = isImage &&
+                                                        expandedImageKey != null &&
+                                                        expandedImageKey == imageKey &&
+                                                        !isImageClosing,
+                                                    isAuthor = isAuthor,
+                                                    messageLabel = message.content,
+                                                    onCancelUpload = onCancelUpload,
+                                                    messageGroup = group,
+                                                    modifier = if (
+                                                        isFirstImage &&
+                                                        firstContentIsImage &&
+                                                        isImage
+                                                    ) {
+                                                        Modifier.padding(all = 2.dp)
+                                                    } else {
+                                                        Modifier.padding(
+                                                            horizontal =
+                                                                if (isImage) 2.dp else 4.dp,
+                                                            vertical =
+                                                                if (isImage) 2.dp else 4.dp,
+                                                        )
+                                                    }
+                                                )
+                                            }
+                                        }
+                                        if (
+                                            message.content.isNotBlank() &&
+                                            !isCorrupted &&
+                                            !isFilenameOnlyMessageCaption(message)
+                                        ) {
+                                            Text(
+                                                text = message.content,
+                                                style = MaterialTheme.typography.bodyLarge,
+                                                color = contentColor,
+                                                modifier = Modifier.padding(horizontal = 14.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
                         Row(
                             modifier = Modifier
-                                .padding(start = 12.dp, end = 12.dp, top = 4.dp, bottom = 8.dp),
+                                .graphicsLayer { alpha = timestampAlpha }
+                                .padding(
+                                    top = 2.dp,
+                                    start = if (isAuthor) 0.dp else 4.dp,
+                                    end = if (isAuthor) 4.dp else 0.dp,
+                                ),
                             horizontalArrangement = Arrangement.End,
-                            verticalAlignment = Alignment.CenterVertically
+                            verticalAlignment = Alignment.CenterVertically,
                         ) {
-                            if (isPendingOutbound && !sendFailed) {
-                                CircularProgressIndicator(
-                                    modifier = Modifier.size(12.dp),
-                                    strokeWidth = 1.5.dp,
-                                    color = if (isAuthor) {
-                                        Color.White.copy(alpha = 0.7f)
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
+                            AnimatedVisibility(
+                                visible = timestampTakesSpace,
+                                enter = fadeIn(tween(200)) +
+                                    expandVertically(expandFrom = Alignment.Top),
+                                exit = fadeOut(tween(180)) +
+                                    shrinkVertically(shrinkTowards = Alignment.Top),
+                            ) {
+                                // Fixed-height meta row so schedule ↔ time never shifts layout.
+                                Box(
+                                    modifier = Modifier.height(16.dp),
+                                    contentAlignment = Alignment.CenterEnd,
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                    ) {
+                                        if (showScheduleIcon) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.Schedule,
+                                                contentDescription = null,
+                                                modifier = Modifier.size(14.dp),
+                                                tint = metaColor,
+                                            )
+                                        } else if (sendFailed) {
+                                            Icon(
+                                                imageVector = Icons.Rounded.ErrorOutline,
+                                                contentDescription = sendFailedLabel,
+                                                modifier = Modifier
+                                                    .size(14.dp)
+                                                    .semantics {
+                                                        contentDescription = sendFailedLabel
+                                                    },
+                                                tint = MaterialTheme.colorScheme.error,
+                                            )
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = formattedTime,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontSize = 12.sp,
+                                                color = metaColor,
+                                            )
+                                        } else {
+                                            Text(
+                                                text = formattedTime,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontSize = 12.sp,
+                                                color = metaColor,
+                                            )
+                                        }
+                                        if (message.is_edited && !showScheduleIcon) {
+                                            Spacer(modifier = Modifier.width(4.dp))
+                                            Text(
+                                                text = editedSuffix,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                fontSize = 12.sp,
+                                                color = metaColor,
+                                            )
+                                        }
                                     }
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                            } else if (sendFailed) {
-                                Icon(
-                                    imageVector = Icons.Rounded.ErrorOutline,
-                                    contentDescription = sendFailedLabel,
-                                    modifier = Modifier
-                                        .size(14.dp)
-                                        .semantics { contentDescription = sendFailedLabel },
-                                    tint = if (isAuthor) {
-                                        Color.White.copy(alpha = 0.85f)
-                                    } else {
-                                        MaterialTheme.colorScheme.error
-                                    },
-                                )
-                                Spacer(modifier = Modifier.width(6.dp))
-                            }
-                            Text(
-                                text = formattedTime,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontSize = 11.sp,
-                                color = if (isAuthor) {
-                                    Color.White.copy(alpha = 0.7f)
-                                } else {
-                                    MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
                                 }
-                            )
-                            if (message.is_edited) {
-                                Spacer(modifier = Modifier.width(4.dp))
-                                Text(
-                                    text = editedSuffix,
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontSize = 11.sp,
-                                    color = if (isAuthor) {
-                                        Color.White.copy(alpha = 0.7f)
-                                    } else {
-                                        MaterialTheme.colorScheme.onSurface.copy(alpha = 0.7f)
-                                    }
-                                )
                             }
                         }
-                            }
                         }
                     }
                 }
-                }
             }
-        }
         }
     }
 }
 
+@Composable
+private fun MessageReplyQuote(
+    replyTo: Message,
+    isAuthor: Boolean,
+    currentUserId: Int?,
+    replyScale: Float,
+    replyJumpCd: String,
+    photoLabel: String,
+    isContextMenuOpen: Boolean,
+    onReplyClick: ((Int) -> Unit)?,
+    onReplyPressedChange: (Boolean) -> Unit,
+) {
+    val replyName = messageDisplayUsername(replyTo, currentUserId)
+    val replyTapEnabled = onReplyClick != null && replyTo.id > 0
+    val hasImage = replyTo.files?.firstOrNull()?.let { isImageFilename(it.name) } == true ||
+        replyTo.fileThumbnails?.firstOrNull()?.isNotBlank() == true
+    val previewText = when {
+        replyTo.content.isNotBlank() ->
+            replyTo.content.take(50) + if (replyTo.content.length > 50) "..." else ""
+        hasImage -> photoLabel
+        else -> replyTo.content
+    }
+    val onPrimary = MaterialTheme.colorScheme.onPrimary
+    val accent = if (isAuthor) onPrimary.copy(alpha = 0.7f) else MaterialTheme.colorScheme.primary
+    val nameColor = if (isAuthor) onPrimary else MaterialTheme.colorScheme.primary
+    val previewColor =
+        if (isAuthor) onPrimary.copy(alpha = 0.75f) else MaterialTheme.colorScheme.onSurfaceVariant
+    val quoteBg =
+        if (isAuthor) {
+            onPrimary.copy(alpha = 0.18f)
+        } else {
+            MaterialTheme.colorScheme.surfaceVariant
+        }
+
+    val replyPressModifier =
+        if (replyTapEnabled && !isContextMenuOpen) {
+            Modifier.pointerInput(replyTo.id, isContextMenuOpen) {
+                detectTapGestures(
+                    onPress = {
+                        onReplyPressedChange(true)
+                        try {
+                            awaitRelease()
+                        } finally {
+                            onReplyPressedChange(false)
+                        }
+                    },
+                    onTap = { onReplyClick.invoke(replyTo.id) },
+                )
+            }
+        } else {
+            Modifier
+        }
+
+    Box(
+        Modifier
+            .padding(bottom = 4.dp, start = 6.dp, end = 6.dp)
+            .graphicsLayer(
+                scaleX = replyScale,
+                scaleY = replyScale,
+                transformOrigin = TransformOrigin.Center,
+            )
+            .then(replyPressModifier)
+            .semantics {
+                if (replyTapEnabled) contentDescription = replyJumpCd
+            },
+    ) {
+        Row(
+            modifier = Modifier
+                .clip(RoundedCornerShape(12.dp))
+                .background(quoteBg)
+                .height(IntrinsicSize.Min),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Box(
+                Modifier
+                    .background(accent)
+                    .width(3.dp)
+                    .fillMaxHeight()
+            )
+            Column(
+                Modifier.padding(horizontal = 8.dp, vertical = 6.dp)
+            ) {
+                Text(
+                    text = replyName,
+                    style = MaterialTheme.typography.labelSmall,
+                    fontWeight = FontWeight.SemiBold,
+                    color = nameColor,
+                    fontSize = 11.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    text = previewText,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = previewColor,
+                    fontSize = 12.sp,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+    }
+}

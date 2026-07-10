@@ -26,6 +26,7 @@ internal fun mergeDatabaseMessagesWithPanelState(
 
     val mergedClientIds = mergedDb.mapNotNull { it.client_message_id?.trim()?.takeIf { id -> id.isNotEmpty() } }.toSet()
     val mergedIds = mergedDb.map { it.id }.toSet()
+    // Keep in-flight panel optimistics even when the DB Flow emission already stripped them.
     val extraPanel = panelMessages.filter { panel ->
         val cid = panel.client_message_id?.trim()?.takeIf { it.isNotEmpty() }
         when {

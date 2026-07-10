@@ -33,7 +33,13 @@ internal fun messageDedupeKey(msg: Message): String {
     return if (cid.isNotEmpty()) "c:$cid" else "i:${msg.id}"
 }
 
-/** Drops optimistic rows already represented by a confirmed message (same client id or recent own attachment). */
+/**
+ * Drops optimistic rows already represented by a confirmed message (same client id),
+ * or legacy near-duplicate own rows that have no client id.
+ *
+ * In-flight sends with a [Message.client_message_id] that is not yet confirmed must be kept —
+ * time-based heuristics must not remove them (that aborted enter animations mid-spring).
+ */
 internal fun dropSupersededOptimisticMessages(
     messages: List<Message>,
     currentUserId: Int?,
@@ -46,6 +52,8 @@ internal fun dropSupersededOptimisticMessages(
         if (msg.id >= 0) return@filter true
         val cid = msg.client_message_id?.trim().orEmpty()
         if (cid.isNotEmpty() && cid in confirmedClientIds) return@filter false
+        // Stable client id still in flight — never drop via time heuristics.
+        if (cid.isNotEmpty()) return@filter true
         // In-flight uploads (file or image): keep until a confirmed row shares the same client id.
         if (msg.pendingFileUri != null || !msg.uploadJobId.isNullOrBlank()) return@filter true
         if (self == null || msg.user_id != self) return@filter true

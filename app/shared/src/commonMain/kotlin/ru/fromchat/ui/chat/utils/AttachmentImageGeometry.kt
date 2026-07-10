@@ -4,9 +4,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.ui.unit.dp
 import ru.fromchat.api.local.db.aspectRatioFromDimensionPair
 import ru.fromchat.api.local.download.ChatPreviewDecodeSize
-
-/** Bubble top radius (must match [ru.fromchat.ui.chat.MessageItem] bubble shape). */
-private val BUBBLE_TOP = 20.dp
+import ru.fromchat.ui.chat.MessageGroupInfo
+import ru.fromchat.ui.chat.bubbleTopRadii
 
 /** Padding between bubble edge and attachment image (must match MessageItem image padding). */
 internal val ATTACHMENT_IMAGE_INSET = 2.dp
@@ -15,12 +14,18 @@ internal val ATTACHMENT_IMAGE_INSET = 2.dp
 private val IMAGE_BOTTOM_CORNER = 4.dp
 
 /** Inner clip: top corners follow bubble minus inset; bottom corners lightly rounded. */
-@Suppress("UNUSED_PARAMETER")
-internal fun attachmentImageCornerShape(isAuthor: Boolean): RoundedCornerShape {
+internal fun attachmentImageCornerShape(
+    isAuthor: Boolean,
+    group: MessageGroupInfo = MessageGroupInfo(
+        hasSameAuthorAbove = false,
+        hasSameAuthorBelow = false,
+    ),
+): RoundedCornerShape {
     val inset = ATTACHMENT_IMAGE_INSET
+    val (topStart, topEnd) = bubbleTopRadii(isAuthor, group)
     return RoundedCornerShape(
-        topStart = (BUBBLE_TOP - inset).coerceAtLeast(0.dp),
-        topEnd = (BUBBLE_TOP - inset).coerceAtLeast(0.dp),
+        topStart = (topStart - inset).coerceAtLeast(0.dp),
+        topEnd = (topEnd - inset).coerceAtLeast(0.dp),
         bottomStart = IMAGE_BOTTOM_CORNER,
         bottomEnd = IMAGE_BOTTOM_CORNER,
     )

@@ -10,6 +10,7 @@ import kotlinx.datetime.number
 import kotlinx.datetime.toLocalDateTime
 import org.jetbrains.compose.resources.stringResource
 import ru.fromchat.Res
+import ru.fromchat.api.local.messages.parseMessageInstant
 import ru.fromchat.month_apr
 import ru.fromchat.month_aug
 import ru.fromchat.month_dec
@@ -131,7 +132,7 @@ fun rememberLastSeenFormatStrings(): LastSeenFormatStrings {
 fun formatLastSeen(online: Boolean, lastSeenIso: String?, s: LastSeenFormatStrings): String {
     if (online) return s.online
     val iso = lastSeenIso ?: return ""
-    val instant = runCatching { Instant.parse(iso) }.getOrNull() ?: return s.recently
+    val instant = parseMessageInstant(iso) ?: return s.recently
     if (instant.toEpochMilliseconds() <= 0L) return s.longAgo
 
     val timeZone = TimeZone.currentSystemDefault()

@@ -4,7 +4,6 @@ import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
@@ -15,12 +14,18 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
-import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.core.tween
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -31,6 +36,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -49,6 +55,11 @@ import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
+import kotlinx.datetime.LocalDate
+import ru.fromchat.api.local.messages.formatChatDateSeparator
+import ru.fromchat.chat_date_today
+import ru.fromchat.chat_date_yesterday
+import ru.fromchat.utils.rememberRegistrationDateFormatStrings
 import com.pr0gramm3r101.utils.resetFocus
 import com.pr0gramm3r101.utils.supportClipboardManagerImpl
 import dev.chrisbanes.haze.HazeProgressive
@@ -176,12 +187,158 @@ fun ChatScreen(
         }
     }
     val chatScrollClearancePx = remember { mutableStateOf(0 to 0) }
-    val scrollToChatMessage: (Int) -> Unit = { messageId ->
+    val dateToday = stringResource(Res.string.chat_date_today)
+    val dateYesterday = stringResource(Res.string.chat_date_yesterday)
+    val registrationDateStrings = rememberRegistrationDateFormatStrings()
+    val listItems = remember(
+        panelState.messages,
+        dateToday,
+        dateYesterday,
+        registrationDateStrings,
+    ) {
+        buildChatListItems(panelState.messages) { date: LocalDate ->
+            formatChatDateSeparator(
+                date = date,
+                todayLabel = dateToday,
+                yesterdayLabel = dateYesterday,
+                monthName = registrationDateStrings.monthName,
+            )
+        }
+    }
+    var revealedTimestampKeys by rememberSaveable(panelId) {
+        mutableStateOf(setOf<String>())
+    }
+    var hiddenDefaultTimestampKeys by rememberSaveable(panelId) {
+        mutableStateOf(setOf<String>())
+    }
+    var lastAnimatedMessageKeys by rememberSaveable(panelId) {
+        mutableStateOf(setOf<String>())
+    }
+    val enterCoordinator = remember(panelId) { MessageEnterCoordinator(scope) }
+    val activeEnterAnimation by enterCoordinator.currentItem.collectAsState()
+    val pendingNewMessageKeys by enterCoordinator.pendingNewMessageKeys.collectAsState()
+    val queuedEnter by enterCoordinator.queuedEnter.collectAsState()
+    var previousNewestFingerprint by rememberSaveable(panelId) { mutableStateOf("") }
+    var previousEnterMessageCount by rememberSaveable(panelId) { mutableIntStateOf(0) }
+    var enterAnimationsSeeded by rememberSaveable(panelId) { mutableStateOf(false) }
+
+    LaunchedEffect(panelState.messages) {
         val messages = panelState.messages
-        val messageIndex = messages.indexOfFirst { it.id == messageId }
-        if (messageIndex != -1) {
+        val newest = messages.lastOrNull()
+        if (newest == null) {
+            if (!enterAnimationsSeeded) {
+                previousNewestFingerprint = ""
+                previousEnterMessageCount = 0
+            }
+            return@LaunchedEffect
+        }
+        val newestKey = messageListKey(newest)
+        val fingerprint = "$newestKey|${messages.size}"
+        if (fingerprint == previousNewestFingerprint) return@LaunchedEffect
+
+        val previousFingerprint = previousNewestFingerprint
+        val previousCount = previousEnterMessageCount
+        val sizeDelta = messages.size - previousCount
+
+        // First non-empty load (or reopen before seed): never animate existing history.
+        if (!enterAnimationsSeeded || previousFingerprint.isEmpty()) {
+            lastAnimatedMessageKeys = messages.map { messageListKey(it) }.toSet()
+            previousNewestFingerprint = fingerprint
+            previousEnterMessageCount = messages.size
+            enterAnimationsSeeded = true
+            return@LaunchedEffect
+        }
+
+        previousNewestFingerprint = fingerprint
+        previousEnterMessageCount = messages.size
+
+        val previousNewestKey = previousFingerprint.substringBefore('|')
+        // History prepend / cache hydration: newest unchanged, older rows appeared.
+        if (newestKey == previousNewestKey) {
+            Logger.d(
+                "EnterAnim",
+                "skip_newest_unchanged newestKey=${newestKey.take(12)} " +
+                    "sizeDelta=$sizeDelta count=${messages.size}",
+            )
+            lastAnimatedMessageKeys =
+                lastAnimatedMessageKeys + messages.map { messageListKey(it) }
+            return@LaunchedEffect
+        }
+        // Transient shrink (optimistic briefly missing from a DB sync): do not seed
+        // lastAnimated. Drop keys for rows that left so a restore can re-enqueue enter.
+        if (sizeDelta < 0) {
+            val presentKeys = messages.mapTo(mutableSetOf()) { messageListKey(it) }
+            lastAnimatedMessageKeys = lastAnimatedMessageKeys.intersect(presentKeys)
+            Logger.d(
+                "EnterAnim",
+                "skip_shrink newestKey=${newestKey.take(12)} sizeDelta=$sizeDelta " +
+                    "count=${messages.size} newestId=${newest.id}",
+            )
+            return@LaunchedEffect
+        }
+        // Bulk replace / multi-message sync — seed, don't animate.
+        if (sizeDelta > 1) {
+            Logger.d(
+                "EnterAnim",
+                "skip_bulk_delta newestKey=${newestKey.take(12)} sizeDelta=$sizeDelta " +
+                    "count=${messages.size} newestId=${newest.id}",
+            )
+            lastAnimatedMessageKeys =
+                lastAnimatedMessageKeys + messages.map { messageListKey(it) }
+            return@LaunchedEffect
+        }
+        if (newestKey in lastAnimatedMessageKeys) return@LaunchedEffect
+        // Confirm may briefly change key shape; don't re-animate the same send.
+        val newestCid = newest.client_message_id?.trim().orEmpty()
+        if (newestCid.isNotEmpty() && "c:$newestCid" in lastAnimatedMessageKeys) {
+            Logger.d(
+                "EnterAnim",
+                "skip_cid_already_animated newestKey=${newestKey.take(12)} " +
+                    "cid=${newestCid.take(8)}",
+            )
+            lastAnimatedMessageKeys = lastAnimatedMessageKeys + newestKey
+            return@LaunchedEffect
+        }
+        if (newest.id > 0 && lastAnimatedMessageKeys.any { it.startsWith("i:${newest.id}:") }) {
+            Logger.d(
+                "EnterAnim",
+                "skip_id_already_animated newestKey=${newestKey.take(12)} id=${newest.id}",
+            )
+            lastAnimatedMessageKeys = lastAnimatedMessageKeys + newestKey
+            return@LaunchedEffect
+        }
+
+        val previous = messages.getOrNull(messages.lastIndex - 1)
+        val mode = classifyEnterMode(previous, newest)
+        if (mode == EnterMode.None) {
+            lastAnimatedMessageKeys = lastAnimatedMessageKeys + newestKey
+            return@LaunchedEffect
+        }
+        Logger.d(
+            "EnterAnim",
+            "will_enqueue newestKey=${newestKey.take(12)} " +
+                "prevKey=${previous?.let { messageListKey(it).take(12) }} mode=$mode " +
+                "sizeDelta=$sizeDelta newestId=${newest.id}",
+        )
+        lastAnimatedMessageKeys = lastAnimatedMessageKeys + newestKey
+        enterCoordinator.enqueue(
+            PendingEnter(
+                newMessageKey = newestKey,
+                previousMessageKey = previous?.let { messageListKey(it) },
+                mode = mode,
+                newDateSeparatorEpochDay = if (mode == EnterMode.NewDay) {
+                    messageLocalDate(newest)?.toEpochDays()
+                } else {
+                    null
+                },
+            ),
+        )
+    }
+
+    val scrollToChatMessage: (Int) -> Unit = { messageId ->
+        val lazyIndex = lazyIndexForMessageId(listItems, messageId)
+        if (lazyIndex != null) {
             scope.launch {
-                val lazyIndex = 1 + (messages.size - 1 - messageIndex)
                 val (topClearancePx, bottomClearancePx) = chatScrollClearancePx.value
                 listState.scrollChatMessageToCenter(
                     lazyIndex,
@@ -755,89 +912,211 @@ fun ChatScreen(
                                 .hazeSource(hazeState),
                             userScrollEnabled = !contextMenuState.isOpen,
                             reverseLayout = true,
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
                         ) {
-                        item { Spacer(Modifier.height(innerPadding.calculateBottomPadding())) }
-
-                        items(
-                            items = panelState.messages.asReversed(),
-                            key = { msg ->
-                                val cid = msg.client_message_id?.trim().orEmpty()
-                                if (cid.isNotEmpty()) "c:$cid" else "i:${msg.id}:${msg.timestamp}"
-                            }
-                        ) { message ->
-                            var tapPositionInRoot by remember { mutableStateOf(IntOffset(0, 0)) }
-
-                            MessageItem(
-                                message = message,
-                                isAuthor = message.user_id == currentUserId,
-                                isContextMenuOpen = contextMenuState.isOpen,
-                                isContextMenuForThisMessage = contextMenuState.isOpen && run {
-                                    val menu = contextMenuState.message ?: return@run false
-                                    val cid = menu.client_message_id?.trim().orEmpty()
-                                    if (cid.isNotEmpty()) {
-                                        message.client_message_id?.trim() == cid
-                                    } else {
-                                        menu.id == message.id
-                                    }
-                                },
-                                onLongPress = {
-                                    if (isReadOnly) {
-                                        return@MessageItem
-                                    }
-                                    haptic(HapticFeedbackEvent.ContextMenuOpened)
-                                    contextMenuState = ContextMenuState(
-                                        isOpen = true,
-                                        message = message,
-                                        position = tapPositionInRoot
-                                    )
-                                },
-                                onTapPosition = { offset ->
-                                    tapPositionInRoot = IntOffset(offset.x.toInt(), offset.y.toInt())
-                                },
-                                onUsernameClick =
-                                    if (panel.supportsNavigateToSenderProfile &&
-                                        message.user_id != currentUserId &&
-                                        message.user_id > 0
-                                    ) {
-                                        {
-                                            ProfileCache.mergePreviewFromPublicMessage(message)
-                                            navController.navigate("profile/${message.user_id}")
-                                        }
-                                    } else {
-                                        null
-                                    },
-                                onImageClick = { msg, idx ->
-                                    resetFocus(keyboardController, focusManager)
-                                    expandedImage = msg to idx
-                                },
-                                onImageBounds = { key, rect ->
-                                    imageThumbBounds[key] = rect
-                                },
-                                expandedImageKey = expandedImageKey,
-                                isImageClosing = isImageClosing,
-                                showUsername = panel.showUsernamesInMessages,
-                                currentUserId = currentUserId,
-                                onCancelOutboundAttachment = { msg ->
-                                    scope.launch { panel.cancelQueuedMessage(msg) }
-                                },
-                                onRetryOutboundAttachment = { msg ->
-                                    val cid = msg.client_message_id?.trim().orEmpty()
-                                    if (cid.isNotEmpty()) {
-                                        panel.updateMessageByClientMessageId(cid) {
-                                            it.copy(uploadError = null, uploadProgress = 0)
-                                        }
-
-                                        OutgoingMessageCoordinator.retryDmAttachmentUpload(cid)
-                                    }
-                                },
-                                onReplyClick = scrollToChatMessage,
-                                highlightMessageId = highlightMessageId,
-                                highlightFading = highlightFading,
+                        item {
+                            Spacer(
+                                Modifier.height(
+                                    innerPadding.calculateBottomPadding() + 12.dp,
+                                ),
                             )
                         }
 
-                        item { Spacer(Modifier.height(floatingHeaderClearance)) }
+                        items(
+                            items = listItems,
+                            key = { item ->
+                                when (item) {
+                                    is ChatListItem.DateSeparator -> "d:${item.epochDay}"
+                                    is ChatListItem.MessageRow -> messageListKey(item.message)
+                                }
+                            }
+                        ) { item ->
+                            when (item) {
+                                is ChatListItem.DateSeparator -> {
+                                    ChatDateSeparator(
+                                        label = item.label,
+                                        enterAnimationRole = resolveDateSeparatorEnterRole(
+                                            item.epochDay,
+                                            activeEnterAnimation,
+                                        ),
+                                        modifier = Modifier.padding(vertical = 12.dp),
+                                    )
+                                }
+                                is ChatListItem.MessageRow -> {
+                                    val message = item.message
+                                    var tapPositionInRoot by remember {
+                                        mutableStateOf(IntOffset(0, 0))
+                                    }
+                                    val messageKey = timestampGroupKey(message)
+                                    val listKey = messageListKey(message)
+                                    // Keep the newest bubble as NewMessage before enqueue runs.
+                                    val newest = panelState.messages.lastOrNull()
+                                    val newestListKey = newest?.let { messageListKey(it) }
+                                    val compositionPendingNewest =
+                                        enterAnimationsSeeded &&
+                                            newestListKey != null &&
+                                            newestListKey !in lastAnimatedMessageKeys &&
+                                            newestListKey !in pendingNewMessageKeys &&
+                                            activeEnterAnimation?.newMessageKey != newestListKey
+                                    val pendingKeysForRole =
+                                        if (compositionPendingNewest) {
+                                            pendingNewMessageKeys + newestListKey
+                                        } else {
+                                            pendingNewMessageKeys
+                                        }
+                                    val enterRole = resolveMessageEnterRole(
+                                        listKey,
+                                        activeEnterAnimation,
+                                        pendingKeysForRole,
+                                        queuedEnter,
+                                    )
+                                    // Grouping flips isLastInGroup as soon as the new row exists.
+                                    // Hold the previous bubble's timestamp until PreviousLast is
+                                    // applied so fade runs in parallel with the enter spring —
+                                    // not before it (that looked like "fade, wait, then animate").
+                                    val holdTimestampForEnter = run {
+                                        if (item.group.isLastInGroup) return@run false
+                                        if (enterRole == EnterAnimationRole.PreviousLast) {
+                                            return@run true
+                                        }
+                                        val enter = queuedEnter ?: activeEnterAnimation?.let {
+                                            PendingEnter(
+                                                newMessageKey = it.newMessageKey,
+                                                previousMessageKey = it.previousMessageKey,
+                                                mode = it.mode,
+                                                newDateSeparatorEpochDay =
+                                                    it.newDateSeparatorEpochDay,
+                                            )
+                                        }
+                                        if (
+                                            enter != null &&
+                                            enter.mode == EnterMode.ExtendGroup &&
+                                            enter.previousMessageKey == listKey
+                                        ) {
+                                            return@run true
+                                        }
+                                        if (!compositionPendingNewest) return@run false
+                                        val previous = panelState.messages
+                                            .getOrNull(panelState.messages.lastIndex - 1)
+                                        previous != null &&
+                                            messageListKey(previous) == listKey &&
+                                            classifyEnterMode(previous, newest!!) ==
+                                                EnterMode.ExtendGroup
+                                    }
+                                    val showTimestamp = when {
+                                        messageKey in revealedTimestampKeys -> true
+                                        messageKey in hiddenDefaultTimestampKeys -> false
+                                        item.group.isLastInGroup || holdTimestampForEnter -> true
+                                        else -> false
+                                    }
+
+                                    MessageItem(
+                                        message = message,
+                                        isAuthor = message.user_id == currentUserId,
+                                        group = item.group,
+                                        showTimestamp = showTimestamp,
+                                        onBubbleTap = {
+                                            if (item.group.isLastInGroup &&
+                                                messageKey !in revealedTimestampKeys
+                                            ) {
+                                                // Default-visible last bubble: tap hides.
+                                                hiddenDefaultTimestampKeys =
+                                                    if (messageKey in hiddenDefaultTimestampKeys) {
+                                                        hiddenDefaultTimestampKeys - messageKey
+                                                    } else {
+                                                        hiddenDefaultTimestampKeys + messageKey
+                                                    }
+                                            } else {
+                                                revealedTimestampKeys =
+                                                    if (messageKey in revealedTimestampKeys) {
+                                                        revealedTimestampKeys - messageKey
+                                                    } else {
+                                                        revealedTimestampKeys + messageKey
+                                                    }
+                                                hiddenDefaultTimestampKeys =
+                                                    hiddenDefaultTimestampKeys - messageKey
+                                            }
+                                        },
+                                        enterAnimationRole = enterRole,
+                                        modifier = Modifier.padding(top = item.spacingAbove),
+                                        isContextMenuOpen = contextMenuState.isOpen,
+                                        isContextMenuForThisMessage =
+                                            contextMenuState.isOpen && run {
+                                                val menu = contextMenuState.message
+                                                    ?: return@run false
+                                                val cid = menu.client_message_id?.trim().orEmpty()
+                                                if (cid.isNotEmpty()) {
+                                                    message.client_message_id?.trim() == cid
+                                                } else {
+                                                    menu.id == message.id
+                                                }
+                                            },
+                                        onLongPress = {
+                                            if (isReadOnly) {
+                                                return@MessageItem
+                                            }
+                                            haptic(HapticFeedbackEvent.ContextMenuOpened)
+                                            contextMenuState = ContextMenuState(
+                                                isOpen = true,
+                                                message = message,
+                                                position = tapPositionInRoot
+                                            )
+                                        },
+                                        onTapPosition = { offset ->
+                                            tapPositionInRoot =
+                                                IntOffset(offset.x.toInt(), offset.y.toInt())
+                                        },
+                                        onUsernameClick =
+                                            if (panel.supportsNavigateToSenderProfile &&
+                                                message.user_id != currentUserId &&
+                                                message.user_id > 0
+                                            ) {
+                                                {
+                                                    ProfileCache.mergePreviewFromPublicMessage(
+                                                        message,
+                                                    )
+                                                    navController.navigate(
+                                                        "profile/${message.user_id}",
+                                                    )
+                                                }
+                                            } else {
+                                                null
+                                            },
+                                        onImageClick = { msg, idx ->
+                                            resetFocus(keyboardController, focusManager)
+                                            expandedImage = msg to idx
+                                        },
+                                        onImageBounds = { key, rect ->
+                                            imageThumbBounds[key] = rect
+                                        },
+                                        expandedImageKey = expandedImageKey,
+                                        isImageClosing = isImageClosing,
+                                        showUsername = panel.showUsernamesInMessages,
+                                        currentUserId = currentUserId,
+                                        onCancelOutboundAttachment = { msg ->
+                                            scope.launch { panel.cancelQueuedMessage(msg) }
+                                        },
+                                        onRetryOutboundAttachment = { msg ->
+                                            val cid = msg.client_message_id?.trim().orEmpty()
+                                            if (cid.isNotEmpty()) {
+                                                panel.updateMessageByClientMessageId(cid) {
+                                                    it.copy(
+                                                        uploadError = null,
+                                                        uploadProgress = 0,
+                                                    )
+                                                }
+                                                OutgoingMessageCoordinator
+                                                    .retryDmAttachmentUpload(cid)
+                                            }
+                                        },
+                                        onReplyClick = scrollToChatMessage,
+                                        highlightMessageId = highlightMessageId,
+                                        highlightFading = highlightFading,
+                                    )
+                                }
+                            }
+                        }
+
+                        item { Spacer(modifier.height(floatingHeaderClearance)) }
                         }
 
                         ChatTopBar(
@@ -984,6 +1263,42 @@ fun ChatScreen(
         }
     }
 
+}
+
+@Composable
+private fun ChatDateSeparator(
+    label: String,
+    enterAnimationRole: EnterAnimationRole,
+    modifier: Modifier = Modifier,
+) {
+    val animateEnter = enterAnimationRole == EnterAnimationRole.NewDateSeparator
+    AnimatedVisibility(
+        visible = true,
+        enter = if (animateEnter) {
+            fadeIn(tween(150)) + expandVertically(expandFrom = Alignment.Bottom)
+        } else {
+            fadeIn(tween(0))
+        },
+        exit = fadeOut(tween(0)),
+        modifier = modifier.fillMaxWidth(),
+    ) {
+        Box(
+            modifier = Modifier.fillMaxWidth(),
+            contentAlignment = Alignment.Center,
+        ) {
+            Text(
+                text = label,
+                style = MaterialTheme.typography.labelSmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                modifier = Modifier
+                    .background(
+                        MaterialTheme.colorScheme.surfaceContainerHigh,
+                        RoundedCornerShape(12.dp),
+                    )
+                    .padding(horizontal = 12.dp, vertical = 4.dp),
+            )
+        }
+    }
 }
 
 private suspend fun LazyListState.scrollChatMessageToCenter(

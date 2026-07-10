@@ -333,11 +333,17 @@ abstract class ChatPanel(
 
         updateState { currentState ->
             val optimistic = currentState.messages.find { it.client_message_id == tempId }
-            val resolvedConfirmed = if (confirmedMessage.reply_to == null) {
-                val reply = optimistic?.reply_to
-                if (reply != null) confirmedMessage.copy(reply_to = reply) else confirmedMessage
+            // Keep client_message_id so LazyColumn keys / enter animation state stay stable.
+            val withClientId = if (confirmedMessage.client_message_id.isNullOrBlank()) {
+                confirmedMessage.copy(client_message_id = tempId)
             } else {
                 confirmedMessage
+            }
+            val resolvedConfirmed = if (withClientId.reply_to == null) {
+                val reply = optimistic?.reply_to
+                if (reply != null) withClientId.copy(reply_to = reply) else withClientId
+            } else {
+                withClientId
             }
             val withoutDupReal = if (resolvedConfirmed.id > 0) {
                 currentState.messages.filter { it.id != resolvedConfirmed.id }
@@ -432,7 +438,13 @@ abstract class ChatPanel(
     suspend fun sendMessageWithImmediateDisplay(content: String, replyToId: Int?) {
         if (content.isBlank()) return
 
-        // Create temporary message for immediate display
+        val sendT0 = kotlin.time.Clock.System.now().toEpochMilliseconds()
+        Logger.d(
+            "EnterAnim",
+            "send_start contentLen=${content.trim().length} msgCount=${_state.messages.size}",
+        )
+
+        // Show the bubble immediately; pace only the network send below.
         val tempId = generateClientMessageId()
         val tempMessage = Message(
             id = -1, // Temporary negative ID
@@ -452,6 +464,13 @@ abstract class ChatPanel(
         val optimistic = tempMessage.copy(id = uniqueOptimisticMessageId())
         addMessage(optimistic)
 
+        Logger.d(
+            "EnterAnim",
+            "after_addMessage tempId=${tempId.take(8)} " +
+                "elapsedMs=${kotlin.time.Clock.System.now().toEpochMilliseconds() - sendT0} " +
+                "msgCount=${_state.messages.size}",
+        )
+
         // Set up timeout for failure
         val timeoutJob = scope.launch {
             delay(10000) // 10 seconds timeout
@@ -465,16 +484,24 @@ abstract class ChatPanel(
             runCatching { persistOptimisticMessage(optimistic) }
         }
 
-        // Actually send the message
-        try {
-            sendMessage(content, replyToId, tempId)
-            // Message sent successfully - will be updated when WebSocket confirms
-        } catch (error: Exception) {
-            removeMessageByClientMessageId(tempId)
-            pendingMessages.remove(tempId)
-            timeoutJob.cancel()
-            scope.launch(Dispatchers.Default) {
-                runCatching { removeOptimisticFromCache(optimistic) }
+        // Network send is paced separately so UI enter never waits on the rate limiter.
+        scope.launch {
+            try {
+                val rateT0 = kotlin.time.Clock.System.now().toEpochMilliseconds()
+                MessageRateLimiter.awaitSlot()
+                Logger.d(
+                    "EnterAnim",
+                    "after_rate_limit tempId=${tempId.take(8)} " +
+                        "waitedMs=${kotlin.time.Clock.System.now().toEpochMilliseconds() - rateT0}",
+                )
+                sendMessage(content, replyToId, tempId)
+            } catch (_: Exception) {
+                removeMessageByClientMessageId(tempId)
+                pendingMessages.remove(tempId)
+                timeoutJob.cancel()
+                scope.launch(Dispatchers.Default) {
+                    runCatching { removeOptimisticFromCache(optimistic) }
+                }
             }
         }
     }

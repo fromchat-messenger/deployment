@@ -117,6 +117,9 @@
     <string name="message_edited_suffix">(изменено)</string>
     <string name="message_replying_to">Ответ %1$s</string>
     <string name="message_reply_jump_cd">Перейти к цитируемому сообщению</string>
+    <string name="message_reply_photo">Фото</string>
+    <string name="chat_date_today">Сегодня</string>
+    <string name="chat_date_yesterday">Вчера</string>
     <string name="message_corrupted_short">Сообщение не показывается</string>
     <string name="attachment_image_load_failed">Не удалось загрузить</string>
     <string name="attachment_upload_failed">Не удалось отправить файл</string>

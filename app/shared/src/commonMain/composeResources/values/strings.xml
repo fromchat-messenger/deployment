@@ -129,6 +129,9 @@
     <string name="message_edited_suffix">(edited)</string>
     <string name="message_replying_to">Reply to %1$s</string>
     <string name="message_reply_jump_cd">Jump to quoted message</string>
+    <string name="message_reply_photo">Photo</string>
+    <string name="chat_date_today">Today</string>
+    <string name="chat_date_yesterday">Yesterday</string>
     <string name="message_corrupted_short">Can’t show this message</string>
     <string name="attachment_image_load_failed">Failed to load</string>
     <string name="attachment_upload_failed">Couldn\'t send file</string>

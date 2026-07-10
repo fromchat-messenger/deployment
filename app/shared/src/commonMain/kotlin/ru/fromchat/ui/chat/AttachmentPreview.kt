@@ -107,6 +107,7 @@ import ru.fromchat.ui.chat.utils.coalesceDecodeTarget
 import ru.fromchat.ui.chat.utils.decodeSizeChangedMeaningfully
 import ru.fromchat.ui.components.Text
 import com.pr0gramm3r101.utils.scaleOnPress
+import ru.fromchat.ui.chat.MessageGroupInfo
 
 private val IMAGE_SIZE = 160.dp
 private val IMAGE_MAX_HEIGHT = 240.dp
@@ -145,6 +146,10 @@ fun AttachmentPreview(
     /** Message text shown in attachment download/upload logs. */
     messageLabel: String? = null,
     onCancelUpload: (() -> Unit)? = null,
+    messageGroup: MessageGroupInfo = MessageGroupInfo(
+        hasSameAuthorAbove = false,
+        hasSameAuthorBelow = false,
+    ),
     modifier: Modifier = Modifier,
 ) {
     val isImage = when {
@@ -220,7 +225,7 @@ fun AttachmentPreview(
                             Modifier.sizeIn(maxWidth = IMAGE_SIZE, maxHeight = IMAGE_MAX_HEIGHT)
                         }
                     )
-                    .clip(attachmentImageCornerShape(isAuthor))
+                    .clip(attachmentImageCornerShape(isAuthor, messageGroup))
                     .then(
                         if (onImageBounds != null && showImageTile) {
                             Modifier.onGloballyPositioned { coords ->
@@ -269,6 +274,7 @@ fun AttachmentPreview(
                             messageLabel = messageLabel,
                             onCancelUpload = onCancelUpload,
                             onFullyLoaded = { if (it) isFullyLoaded = true },
+                            messageGroup = messageGroup,
                         )
                     }
                 }
@@ -299,9 +305,13 @@ private fun ChatImageTileContent(
     messageLabel: String? = null,
     onCancelUpload: (() -> Unit)? = null,
     onFullyLoaded: (Boolean) -> Unit = {},
+    messageGroup: MessageGroupInfo = MessageGroupInfo(
+        hasSameAuthorAbove = false,
+        hasSameAuthorBelow = false,
+    ),
 ) {
     val scope = rememberCoroutineScope()
-    val clipShape = attachmentImageCornerShape(isAuthor)
+    val clipShape = attachmentImageCornerShape(isAuthor, messageGroup)
     val cacheClientId = clientMessageId?.trim()?.takeIf { it.isNotEmpty() }
     val layoutAspect = aspectRatio?.takeIf { it.isFinite() && it > 0f }
     val fallbackDecodeSize = rememberChatPreviewDecodeSize(IMAGE_SIZE, layoutAspect)

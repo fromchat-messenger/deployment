@@ -1,9 +1,13 @@
 package ru.fromchat.api.local.messages
 
 import kotlin.time.Instant
+import kotlinx.datetime.DateTimeUnit
+import kotlinx.datetime.LocalDate
 import kotlinx.datetime.LocalDateTime
 import kotlinx.datetime.TimeZone
+import kotlinx.datetime.minus
 import kotlinx.datetime.number
+import kotlinx.datetime.toInstant
 import kotlinx.datetime.toLocalDateTime
 import kotlin.time.Clock
 
@@ -14,17 +18,22 @@ fun nowMessageTimestampIso(): String = Clock.System.now().toString()
 
 /**
  * Parse message timestamps from server or client.
- * Zone-less ISO strings are treated as UTC, then shown in the device zone.
+ *
+ * - Strings with `Z` / an offset (optimistic client stamps, proper UTC) are true instants.
+ * - Zone-less ISO from the API is naive server wall time (`datetime.now().isoformat()`),
+ *   interpreted in the device zone so HH:mm matches the user's clock.
  */
 internal fun parseMessageInstant(timestamp: String): Instant? {
     val raw = timestamp.trim()
     if (raw.isEmpty()) return null
     val normalized = raw.replace(' ', 'T')
-    parseInstantOrNull(normalized)?.let { return it }
-    if (!hasExplicitOffset(normalized)) {
-        parseInstantOrNull("${normalized}Z")?.let { return it }
+    if (hasExplicitOffset(normalized)) {
+        return parseInstantOrNull(normalized)
     }
-    return null
+    val local = parseLocalDateTimeOrNull(normalized) ?: return null
+    return runCatching {
+        local.toInstant(TimeZone.currentSystemDefault())
+    }.getOrNull()
 }
 
 internal fun parseMessageTimestampMillis(timestamp: String): Long? =
@@ -63,8 +72,36 @@ internal fun formatMessageDateTimeLocal(timestamp: String): String {
     return "$month/$day/${local.year} $hour:$minute"
 }
 
+/**
+ * Chat date separator label: Today / Yesterday / "d MMMM" / "d MMMM yyyy".
+ */
+internal fun formatChatDateSeparator(
+    date: LocalDate,
+    todayLabel: String,
+    yesterdayLabel: String,
+    monthName: (Int) -> String,
+): String {
+    val today = Clock.System.now().toLocalDateTime(TimeZone.currentSystemDefault()).date
+    val yesterday = today.minus(1, DateTimeUnit.DAY)
+    return when (date) {
+        today -> todayLabel
+        yesterday -> yesterdayLabel
+        else -> {
+            val month = monthName(date.month.number)
+            if (date.year == today.year) {
+                "${date.day} $month"
+            } else {
+                "${date.day} $month ${date.year}"
+            }
+        }
+    }
+}
+
 private fun parseInstantOrNull(value: String): Instant? =
     runCatching { Instant.parse(value) }.getOrNull()
+
+private fun parseLocalDateTimeOrNull(value: String): LocalDateTime? =
+    runCatching { LocalDateTime.parse(value) }.getOrNull()
 
 private fun hasExplicitOffset(value: String): Boolean =
     value.endsWith('Z', ignoreCase = true) || OFFSET_SUFFIX.containsMatchIn(value)

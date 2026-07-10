@@ -9,6 +9,7 @@ import kotlinx.datetime.number
 import kotlinx.datetime.toLocalDateTime
 import org.jetbrains.compose.resources.stringResource
 import ru.fromchat.Res
+import ru.fromchat.api.local.messages.parseMessageInstant
 import ru.fromchat.month_name_apr
 import ru.fromchat.month_name_aug
 import ru.fromchat.month_name_dec
@@ -23,7 +24,6 @@ import ru.fromchat.month_name_oct
 import ru.fromchat.month_name_sep
 import ru.fromchat.profile_registration_date
 import kotlin.time.ExperimentalTime
-import kotlin.time.Instant
 
 private fun formatFromXmlTemplate(template: String, vararg args: Any): String {
     var result = template
@@ -69,7 +69,7 @@ fun rememberRegistrationDateFormatStrings(): RegistrationDateFormatStrings {
 
 @OptIn(ExperimentalTime::class)
 private fun parseRegistrationLocalDate(iso: String): LocalDate? {
-    runCatching { Instant.parse(iso) }.getOrNull()?.let {
+    parseMessageInstant(iso)?.let {
         return it.toLocalDateTime(TimeZone.currentSystemDefault()).date
     }
     runCatching { LocalDateTime.parse(iso).date }.getOrNull()?.let { return it }
