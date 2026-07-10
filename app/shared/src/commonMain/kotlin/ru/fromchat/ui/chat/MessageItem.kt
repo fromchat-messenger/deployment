@@ -10,11 +10,8 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
-import androidx.compose.foundation.LocalIndication
 import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.gestures.detectTapGestures
-import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -177,10 +174,11 @@ fun MessageItem(
     val isDeletedSender = messageSenderIsDeleted(message, currentUserId)
     val replyRef = message.reply_to
 
-    var isPressed by remember { mutableStateOf(false) }
+    var isPressed by remember(message.id) { mutableStateOf(false) }
     var avatarPressed by remember(message.id) { mutableStateOf(false) }
     var replyPressed by remember(message.id) { mutableStateOf(false) }
     var rowLayoutCoords by remember(message.id) { mutableStateOf<LayoutCoordinates?>(null) }
+    var bubbleContentCoords by remember(message.id) { mutableStateOf<LayoutCoordinates?>(null) }
     val scaleTarget = if (isPressed && !isContextMenuForThisMessage && !isContextMenuOpen) 0.96f else 1f
     val avatarScaleTarget = if (avatarPressed && !isContextMenuOpen) 0.96f else 1f
     val replyScaleTarget = if (replyPressed && !isContextMenuOpen) 0.96f else 1f
@@ -376,7 +374,7 @@ fun MessageItem(
 
         val rowLongPress =
             if (isContextMenuOpen) Modifier
-            else Modifier.pointerInput(isContextMenuOpen, message.id) {
+            else Modifier.pointerInput(message.id, onLongPress) {
                 detectTapGestures(
                     onPress = {
                         isPressed = true
@@ -490,21 +488,30 @@ fun MessageItem(
                             message.files?.firstOrNull()?.let { isImageFilename(it.name) } == true
                     )
 
-                    val bubbleTap =
-                        if (isContextMenuOpen || onBubbleTap == null) Modifier
-                        else Modifier.pointerInput(message.id, onBubbleTap) {
-                            detectTapGestures(
-                                onPress = {
-                                    isPressed = true
-                                    try {
-                                        awaitRelease()
-                                    } finally {
-                                        isPressed = false
-                                    }
-                                },
-                                onTap = { onBubbleTap.invoke() },
-                            )
-                        }
+                    val bubbleBodyGestures =
+                        if (isContextMenuOpen) Modifier
+                        else Modifier
+                            .onGloballyPositioned { bubbleContentCoords = it }
+                            .pointerInput(message.id, onBubbleTap, onLongPress) {
+                                detectTapGestures(
+                                    onPress = {
+                                        isPressed = true
+                                        try {
+                                            awaitRelease()
+                                        } finally {
+                                            isPressed = false
+                                        }
+                                    },
+                                    onTap = { onBubbleTap?.invoke() },
+                                    onLongPress = { localOffset ->
+                                        val coords = bubbleContentCoords
+                                        if (coords != null && coords.isAttached) {
+                                            onTapPosition(coords.localToRoot(localOffset))
+                                        }
+                                        onLongPress()
+                                    },
+                                )
+                            }
 
                     Box {
                         Column(
@@ -550,16 +557,38 @@ fun MessageItem(
                                     val usernameInset =
                                         Modifier.padding(horizontal = 4.dp, vertical = 2.dp)
                                     if (onUsernameClick != null) {
-                                        val usernameInteraction =
-                                            remember(message.id) { MutableInteractionSource() }
                                         Box(
                                             modifier = usernameOutset
                                                 .clip(usernameShape)
-                                                .clickable(
-                                                    interactionSource = usernameInteraction,
-                                                    indication = LocalIndication.current,
-                                                    onClick = onUsernameClick
-                                                )
+                                                .pointerInput(message.id, onUsernameClick) {
+                                                    detectTapGestures(
+                                                        onPress = {
+                                                            isPressed = true
+                                                            try {
+                                                                awaitRelease()
+                                                            } finally {
+                                                                isPressed = false
+                                                            }
+                                                        },
+                                                        onTap = { onUsernameClick.invoke() },
+                                                        onLongPress = {
+                                                            val coords = bubbleContentCoords
+                                                            if (
+                                                                coords != null &&
+                                                                coords.isAttached
+                                                            ) {
+                                                                val center = Offset(
+                                                                    coords.size.width / 2f,
+                                                                    coords.size.height / 2f,
+                                                                )
+                                                                onTapPosition(
+                                                                    coords.localToRoot(center),
+                                                                )
+                                                            }
+                                                            onLongPress()
+                                                        },
+                                                    )
+                                                }
                                         ) {
                                             Row(
                                                 verticalAlignment = Alignment.CenterVertically,
@@ -579,7 +608,38 @@ fun MessageItem(
                                             }
                                         }
                                     } else {
-                                        Box(modifier = usernameOutset) {
+                                        Box(
+                                            modifier = usernameOutset
+                                                .pointerInput(message.id, onBubbleTap) {
+                                                    detectTapGestures(
+                                                        onPress = {
+                                                            isPressed = true
+                                                            try {
+                                                                awaitRelease()
+                                                            } finally {
+                                                                isPressed = false
+                                                            }
+                                                        },
+                                                        onTap = { onBubbleTap?.invoke() },
+                                                        onLongPress = {
+                                                            val coords = bubbleContentCoords
+                                                            if (
+                                                                coords != null &&
+                                                                coords.isAttached
+                                                            ) {
+                                                                val center = Offset(
+                                                                    coords.size.width / 2f,
+                                                                    coords.size.height / 2f,
+                                                                )
+                                                                onTapPosition(
+                                                                    coords.localToRoot(center),
+                                                                )
+                                                            }
+                                                            onLongPress()
+                                                        },
+                                                    )
+                                                },
+                                        ) {
                                             Row(
                                                 verticalAlignment = Alignment.CenterVertically,
                                                 horizontalArrangement = Arrangement.spacedBy(4.dp),
@@ -600,11 +660,7 @@ fun MessageItem(
                                     }
                                 }
 
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxWidth()
-                                        .then(bubbleTap)
-                                ) {
+                                Box(modifier = Modifier.fillMaxWidth()) {
                                     Column {
                                         replyRef?.let { replyToMsg ->
                                             MessageReplyQuote(
@@ -620,6 +676,12 @@ fun MessageItem(
                                             )
                                         }
 
+                                        Box(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .then(bubbleBodyGestures),
+                                        ) {
+                                            Column {
                                         if (isCorrupted) {
                                             Text(
                                                 text = corruptedBody,
@@ -850,6 +912,8 @@ fun MessageItem(
                                                 modifier = Modifier.padding(horizontal = 14.dp)
                                             )
                                         }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -981,7 +1045,7 @@ private fun MessageReplyQuote(
 
     val replyPressModifier =
         if (replyTapEnabled && !isContextMenuOpen) {
-            Modifier.pointerInput(replyTo.id, isContextMenuOpen) {
+            Modifier.pointerInput(replyTo.id) {
                 detectTapGestures(
                     onPress = {
                         onReplyPressedChange(true)
