@@ -66,6 +66,7 @@ class DmPanel(
     private var otherDisplayName: String = ""
     private var otherProfilePicture: String? = null
     private val dmEnvelopeMutex = Mutex()
+    private val loadMessagesMutex = Mutex()
     private var messagesLoaded = false
 
     private data class DmDecryptOutcome(val plaintext: String, val isCorrupted: Boolean)
@@ -219,78 +220,82 @@ class DmPanel(
     }
 
     override suspend fun loadMessages() {
-        if (messagesLoaded) return
-        messagesLoaded = true
+        loadMessagesMutex.withLock {
+            if (messagesLoaded) return
 
-        runCatching { MessageRepository.ensureDmConversationRow(otherUserId) }
+            runCatching { MessageRepository.ensureDmConversationRow(otherUserId) }
 
-        // Read cache first. Do not setLoading(true) before this: that forced a 1-frame spinner
-        // when the chat screen re-entered composition (e.g. pop back from profile).
-        val cached = runCatching { MessageCacheStore.loadDmMessages(otherUserId) }.getOrDefault(emptyList())
-        if (cached.isNotEmpty()) {
-            batchStateUpdates {
-                clearMessages()
-                addMessages(cached)
-                setLoading(false)
-            }
-        } else {
-            setLoading(true)
-        }
-
-        try {
-            OutgoingMessageCoordinator.pruneStaleAttachmentOutboxForInstance(
-                CacheContext.requireActiveInstanceId(),
-            )
-
-            val historyResult = runCatching { ApiClient.getDmHistory(otherUserId) }
-            if (historyResult.isSuccess) {
-                val response = historyResult.getOrNull() ?: return
-                val priorMessages = _state.messages
-                val optimisticSnapshot = snapshotPendingOptimisticMessages()
-                val decryptedForLog = mutableListOf<Pair<Int, String>>()
-                val parsedReplyIds = mutableMapOf<Int, Int>()
-                val messages = response.messages.map { envelope ->
-                    val outcome = decryptDmEnvelopeForUi(envelope)
-                    decryptedForLog.add(envelope.id to outcome.plaintext)
-                    val dec = parseDmMessageContent(outcome.plaintext)
-                    resolveDmReplyToId(envelope, dec.replyToId)?.let { parsedReplyIds[envelope.id] = it }
-                    createMessage(envelope, outcome.plaintext, outcome.isCorrupted)
-                }
-                decryptedForLog.takeLast(5).forEachIndexed { i, (id, json) ->
-                    Logger.d("DmPanel", "Decrypted message #${i + 1} (id=$id): $json")
-                }
-                val messagesWithReplies = attachDmReplyReferences(messages, parsedReplyIds)
-                val mergedForUi = preserveReplyToFromExisting(
-                    priorMessages + optimisticSnapshot,
-                    messagesWithReplies,
-                )
+            // Read cache first. Do not setLoading(true) before this: that forced a 1-frame spinner
+            // when the chat screen re-entered composition (e.g. pop back from profile).
+            val cached = runCatching { MessageCacheStore.loadDmMessages(otherUserId) }.getOrDefault(emptyList())
+            if (cached.isNotEmpty()) {
                 batchStateUpdates {
                     clearMessages()
-                    addMessages(mergedForUi)
-                    restorePendingOptimisticMessages(optimisticSnapshot)
-                    updateState { state ->
-                        val cleaned = dedupeMessagesByClientId(
-                            dropSupersededOptimisticMessages(state.messages, currentUserId),
-                        )
-                        if (cleaned == state.messages) state else state.copy(messages = cleaned)
-                    }
-                    setHasMoreMessages(false)
+                    addMessages(cached)
+                    setLoading(false)
                 }
-
-                // Persist the most recent DM messages for offline use.
-                val mergedForCache = _state.messages
-                MessageCacheStore.replaceDmMessages(otherUserId, mergedForCache)
-            } else {
-                val error = historyResult.exceptionOrNull()
-                Logger.e("DmPanel", "Failed to load DM history: ${error?.message}", error)
-                if (error is ClientRequestException && error.response.status.value == 403) {
-                    MessageCacheStore.clearDmMessages(otherUserId)
-                    clearMessages()
-                    setHasMoreMessages(false)
-                }
+                messagesLoaded = true
+                return
             }
-        } finally {
-            setLoading(false)
+
+            setLoading(true)
+            try {
+                OutgoingMessageCoordinator.pruneStaleAttachmentOutboxForInstance(
+                    CacheContext.requireActiveInstanceId(),
+                )
+
+                val historyResult = runCatching { ApiClient.getDmHistory(otherUserId) }
+                if (historyResult.isSuccess) {
+                    val response = historyResult.getOrNull() ?: return
+                    val priorMessages = _state.messages
+                    val optimisticSnapshot = snapshotPendingOptimisticMessages()
+                    val decryptedForLog = mutableListOf<Pair<Int, String>>()
+                    val parsedReplyIds = mutableMapOf<Int, Int>()
+                    val messages = response.messages.map { envelope ->
+                        val outcome = decryptDmEnvelopeForUi(envelope)
+                        decryptedForLog.add(envelope.id to outcome.plaintext)
+                        val dec = parseDmMessageContent(outcome.plaintext)
+                        resolveDmReplyToId(envelope, dec.replyToId)?.let { parsedReplyIds[envelope.id] = it }
+                        createMessage(envelope, outcome.plaintext, outcome.isCorrupted)
+                    }
+                    decryptedForLog.takeLast(5).forEachIndexed { i, (id, json) ->
+                        Logger.d("DmPanel", "Decrypted message #${i + 1} (id=$id): $json")
+                    }
+                    val messagesWithReplies = attachDmReplyReferences(messages, parsedReplyIds)
+                    val mergedForUi = preserveReplyToFromExisting(
+                        priorMessages + optimisticSnapshot,
+                        messagesWithReplies,
+                    )
+                    batchStateUpdates {
+                        clearMessages()
+                        addMessages(mergedForUi)
+                        restorePendingOptimisticMessages(optimisticSnapshot)
+                        updateState { state ->
+                            val cleaned = dedupeMessagesByClientId(
+                                dropSupersededOptimisticMessages(state.messages, currentUserId),
+                            )
+                            if (cleaned == state.messages) state else state.copy(messages = cleaned)
+                        }
+                        setHasMoreMessages(false)
+                    }
+
+                    // Persist the most recent DM messages for offline use.
+                    val mergedForCache = _state.messages
+                    MessageCacheStore.replaceDmMessages(otherUserId, mergedForCache)
+                    messagesLoaded = true
+                } else {
+                    val error = historyResult.exceptionOrNull()
+                    Logger.e("DmPanel", "Failed to load DM history: ${error?.message}", error)
+                    if (error is ClientRequestException && error.response.status.value == 403) {
+                        MessageCacheStore.clearDmMessages(otherUserId)
+                        clearMessages()
+                        setHasMoreMessages(false)
+                        messagesLoaded = true
+                    }
+                }
+            } finally {
+                setLoading(false)
+            }
         }
     }
 

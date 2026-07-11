@@ -11,6 +11,7 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import ru.fromchat.api.ApiClient
 import ru.fromchat.api.schema.messages.Message
+import ru.fromchat.api.schema.messages.dm.DmConversationUser
 import ru.fromchat.api.schema.user.User
 import ru.fromchat.api.schema.user.profile.UserProfile
 import ru.fromchat.api.schema.user.profile.VerificationStatus
@@ -165,7 +166,7 @@ object ProfileCache {
         if (!hasIdentity) remove(userId)
     }
 
-    fun mergeFromDmUser(user: User) {
+    fun mergeFromDmUser(user: DmConversationUser) {
         if (user.id <= 0) return
 
         val incomingUsername = user.username.trim()
@@ -188,7 +189,7 @@ object ProfileCache {
                 } else {
                     user.profile_picture?.takeIf { it.isNotBlank() } ?: existing.profilePicture
                 },
-                online = user.online,
+                online = user.online ?: existing.online,
                 lastSeen = user.last_seen?.takeIf { it.isNotBlank() } ?: existing.lastSeen,
                 verified = user.verified ?: existing.verified,
                 verificationStatus = user.verificationStatus ?: existing.verificationStatus,
@@ -209,15 +210,33 @@ object ProfileCache {
                 profilePicture = if (isDeleted) null else user.profile_picture?.takeIf { it.isNotBlank() }
                     ?: existing?.profilePicture,
                 bio = existing?.bio,
-                online = user.online,
+                online = user.online ?: existing?.online ?: false,
                 lastSeen = user.last_seen?.takeIf { it.isNotBlank() } ?: existing?.lastSeen,
-                createdAt = user.created_at.takeIf { it.isNotBlank() } ?: existing?.createdAt,
+                createdAt = existing?.createdAt,
                 verified = user.verified ?: existing?.verified,
                 verificationStatus = user.verificationStatus ?: existing?.verificationStatus,
                 suspended = user.suspended ?: existing?.suspended,
                 suspensionReason = user.suspensionReason ?: existing?.suspensionReason,
                 deleted = isDeleted,
                 isClientPreviewOnly = true,
+            ),
+        )
+    }
+
+    fun mergeFromUser(user: User) {
+        mergeFromDmUser(
+            DmConversationUser(
+                id = user.id,
+                username = user.username,
+                displayName = user.displayName,
+                profile_picture = user.profile_picture,
+                online = user.online,
+                last_seen = user.last_seen,
+                verified = user.verified,
+                verificationStatus = user.verificationStatus,
+                suspended = user.suspended,
+                suspensionReason = user.suspensionReason,
+                deleted = user.deleted,
             ),
         )
     }

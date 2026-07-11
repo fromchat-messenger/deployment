@@ -3,10 +3,16 @@ package ru.fromchat.api
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.FlowPreview
 import kotlinx.serialization.json.JsonElement
 import ru.fromchat.api.local.WebSocketManager
 import ru.fromchat.api.local.cache.CacheContext
+import ru.fromchat.api.local.db.store.ConnectionStateStore
+import ru.fromchat.api.local.db.store.ConnectionStatus
 import ru.fromchat.api.local.db.store.MessageCacheStore
 import ru.fromchat.api.local.db.store.MessageRepository
 import ru.fromchat.api.local.db.store.ProfileCache
@@ -19,7 +25,10 @@ import ru.fromchat.api.schema.websocket.types.WebSocketUpdatesData
  * Keeps the chats tab list in sync: DM conversations from the server and the latest public-chat
  * message for list previews (without opening each chat first).
  */
+@OptIn(FlowPreview::class)
 object ChatListSync {
+    private const val CONNECTED_SYNC_DEBOUNCE_MS = 300L
+
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
     private var started = false
 
@@ -29,6 +38,14 @@ object ChatListSync {
 
         WebSocketManager.addSessionReadyHandler {
             scope.launch { syncFromNetwork() }
+        }
+
+        scope.launch {
+            ConnectionStateStore.status
+                .filter { it == ConnectionStatus.CONNECTED }
+                .distinctUntilChanged()
+                .debounce(CONNECTED_SYNC_DEBOUNCE_MS)
+                .collect { syncFromNetwork() }
         }
 
         WebSocketManager.addGlobalMessageHandler(::handleWebSocketMessage)

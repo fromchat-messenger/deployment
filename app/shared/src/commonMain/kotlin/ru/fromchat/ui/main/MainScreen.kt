@@ -4,16 +4,18 @@ import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.WindowInsets
 import androidx.compose.foundation.layout.WindowInsetsSides
+import androidx.compose.foundation.layout.asPaddingValues
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.ime
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.only
+import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.safeDrawing
-import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.pager.HorizontalPager
 import androidx.compose.foundation.pager.rememberPagerState
 import androidx.compose.material.icons.Icons
@@ -28,13 +30,18 @@ import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHostState
-import ru.fromchat.ui.components.Text
-import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.zIndex
 import dev.chrisbanes.haze.HazeState
@@ -44,6 +51,7 @@ import dev.chrisbanes.haze.hazeEffect
 import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import dev.chrisbanes.haze.rememberHazeState
+import ru.fromchat.ui.chat.rememberChatSurfaceContainerHazeStyle
 import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.stringResource
 import ru.fromchat.Res
@@ -53,14 +61,13 @@ import ru.fromchat.contacts
 import ru.fromchat.profile
 import ru.fromchat.settings
 import ru.fromchat.ui.LocalNavController
-import ru.fromchat.ui.chat.rememberChatSurfaceContainerHazeStyle
 import ru.fromchat.ui.components.FromChatSnackbarHost
+import ru.fromchat.ui.components.Text
 import ru.fromchat.ui.main.chats.ChatContextMenuOverlayController
 import ru.fromchat.ui.main.chats.ChatContextMenuOverlayHost
 import ru.fromchat.ui.main.chats.ChatsTab
 import ru.fromchat.ui.main.settings.SettingsTab
 import ru.fromchat.ui.profile.ProfileScreen
-import com.pr0gramm3r101.utils.exclude
 
 private const val PAGE_CHATS = 0
 private const val PAGE_CONTACTS = 1
@@ -73,7 +80,7 @@ private const val PAGE_COUNT = 4
 fun MainScreen(
     sharedTransitionScope: SharedTransitionScope? = null,
     animatedVisibilityScope: AnimatedVisibilityScope? = null,
-    snackbarHostState: SnackbarHostState? = null
+    snackbarHostState: SnackbarHostState? = null,
 ) {
     val effectiveSnackbarHostState = snackbarHostState ?: remember { SnackbarHostState() }
     val navController = LocalNavController.current
@@ -82,14 +89,25 @@ fun MainScreen(
         pageCount = { PAGE_COUNT },
     )
     val scope = rememberCoroutineScope()
+    val density = LocalDensity.current
     val navBarHazeState = rememberHazeState(blurEnabled = true)
+    val navBarHazeStyle = rememberChatSurfaceContainerHazeStyle()
     val contextMenuHazeState = rememberHazeState(blurEnabled = true)
     val chatContextMenuOverlay = remember { ChatContextMenuOverlayController() }
 
-    // Pager is the single source of truth; tabs only call animateScrollToPage (no write/read loop).
     val selectedPage = pagerState.currentPage
     val isChatsPage = selectedPage == PAGE_CHATS
     val chatMenuBlurProgress = chatContextMenuOverlay.blurProgress
+
+    val statusBarTopDp = WindowInsets.statusBars.asPaddingValues().calculateTopPadding()
+    var bottomChromeHeightDp by remember { mutableStateOf(0.dp) }
+
+    val mainChromeInsets = remember(statusBarTopDp, bottomChromeHeightDp) {
+        MainChromeInsets(
+            top = statusBarTopDp,
+            bottom = bottomChromeHeightDp,
+        )
+    }
 
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         Box(
@@ -98,102 +116,114 @@ fun MainScreen(
                 .hazeSource(contextMenuHazeState),
         ) {
             Scaffold(
-                snackbarHost = { FromChatSnackbarHost(hostState = effectiveSnackbarHostState) },
-                bottomBar = {
-                    Column(
-                        modifier = Modifier
-                            .windowInsetsPadding(WindowInsets.ime)
-                            .fillMaxWidth()
-                            .background(MaterialTheme.colorScheme.surfaceContainer)
-                            .hazeEffect(
-                                state = navBarHazeState,
-                                style = rememberChatSurfaceContainerHazeStyle(),
-                            ),
-                    ) {
-                        NavigationBar(
-                        containerColor = Color.Transparent,
-                        tonalElevation = 0.dp,
-                    ) {
-                        NavigationBarItem(
-                            selected = selectedPage == PAGE_CHATS,
-                            onClick = {
-                                scope.launch { pagerState.animateScrollToPage(PAGE_CHATS) }
-                            },
-                            label = { Text(stringResource(Res.string.chats)) },
-                            icon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null) }
-                        )
-                        NavigationBarItem(
-                            selected = selectedPage == PAGE_CONTACTS,
-                            onClick = {
-                                scope.launch { pagerState.animateScrollToPage(PAGE_CONTACTS) }
-                            },
-                            label = { Text(stringResource(Res.string.contacts)) },
-                            icon = { Icon(Icons.Filled.Contacts, contentDescription = null) }
-                        )
-                        NavigationBarItem(
-                            selected = selectedPage == PAGE_SETTINGS,
-                            onClick = {
-                                scope.launch { pagerState.animateScrollToPage(PAGE_SETTINGS) }
-                            },
-                            label = { Text(stringResource(Res.string.settings)) },
-                            icon = { Icon(Icons.Filled.Settings, contentDescription = null) }
-                        )
-                        NavigationBarItem(
-                            selected = selectedPage == PAGE_PROFILE,
-                            onClick = {
-                                scope.launch { pagerState.animateScrollToPage(PAGE_PROFILE) }
-                            },
-                            label = { Text(stringResource(Res.string.profile)) },
-                            icon = { Icon(Icons.Filled.Person, contentDescription = null) }
-                        )
-                    }
-                }
+                snackbarHost = {
+                    FromChatSnackbarHost(
+                        hostState = effectiveSnackbarHostState,
+                        modifier = Modifier.padding(bottom = mainChromeInsets.bottom),
+                    )
                 },
-                contentWindowInsets = WindowInsets.safeDrawing.exclude(WindowInsetsSides.Top),
-                modifier = Modifier.imePadding(),
-            ) { innerPadding ->
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .hazeSource(navBarHazeState),
-                ) {
+                containerColor = Color.Transparent,
+                contentWindowInsets = WindowInsets(0, 0, 0, 0),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .imePadding(),
+            ) {
+                CompositionLocalProvider(LocalMainChromeInsets provides mainChromeInsets) {
                     Box(
                         modifier = Modifier
                             .fillMaxSize()
-                            .padding(innerPadding),
+                            .hazeSource(navBarHazeState),
                     ) {
                         HorizontalPager(
                             state = pagerState,
                             modifier = Modifier.fillMaxSize(),
                             beyondViewportPageCount = 1,
                         ) { page ->
-                        when (page) {
-                            PAGE_CHATS -> ChatsTab(
-                                isVisible = isChatsPage,
-                                onOpenSearch = {
-                                    navController.navigate("search/conversations")
-                                },
-                                chatContextMenuOverlay = chatContextMenuOverlay,
-                                sharedTransitionScope = sharedTransitionScope,
-                                animatedVisibilityScope = animatedVisibilityScope,
-                            )
-                            PAGE_CONTACTS -> ContactsTab()
-                            PAGE_SETTINGS -> SettingsTab()
-                            PAGE_PROFILE -> {
-                                ProfileScreen(
-                                    userId = ApiClient.user?.id,
-                                    onBack = {},
-                                    onChat = { _ -> },
-                                    modifier = Modifier.fillMaxSize(),
-                                    onOpenSettings = {
-                                        scope.launch { pagerState.animateScrollToPage(PAGE_SETTINGS) }
-                                    }
+                            when (page) {
+                                PAGE_CHATS -> ChatsTab(
+                                    isVisible = isChatsPage,
+                                    onOpenSearch = {
+                                        navController.navigate("search/conversations")
+                                    },
+                                    chatContextMenuOverlay = chatContextMenuOverlay,
+                                    sharedTransitionScope = sharedTransitionScope,
+                                    animatedVisibilityScope = animatedVisibilityScope,
                                 )
+                                PAGE_CONTACTS -> ContactsTab()
+                                PAGE_SETTINGS -> SettingsTab()
+                                PAGE_PROFILE -> {
+                                    ProfileScreen(
+                                        userId = ApiClient.user?.id,
+                                        onBack = {},
+                                        onChat = { _ -> },
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .mainPagerBottomInset(),
+                                        onOpenSettings = {
+                                            scope.launch { pagerState.animateScrollToPage(PAGE_SETTINGS) }
+                                        },
+                                    )
+                                }
+                                else -> Unit
                             }
-                            else -> Unit
                         }
                     }
+                }
+            }
+
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .zIndex(1f)
+                    .imePadding()
+                    .onSizeChanged { size ->
+                        val measured = with(density) { size.height.toDp() }
+                        if (measured != bottomChromeHeightDp) {
+                            bottomChromeHeightDp = measured
+                        }
                     }
+                    .background(MaterialTheme.colorScheme.surfaceContainer)
+                    .hazeEffect(state = navBarHazeState, style = navBarHazeStyle),
+            ) {
+                NavigationBar(
+                    modifier = Modifier.fillMaxWidth(),
+                    containerColor = Color.Transparent,
+                    tonalElevation = 0.dp,
+                    windowInsets = WindowInsets.navigationBars.only(WindowInsetsSides.Bottom),
+                ) {
+                    NavigationBarItem(
+                        selected = selectedPage == PAGE_CHATS,
+                        onClick = {
+                            scope.launch { pagerState.animateScrollToPage(PAGE_CHATS) }
+                        },
+                        label = { Text(stringResource(Res.string.chats)) },
+                        icon = { Icon(Icons.AutoMirrored.Filled.Chat, contentDescription = null) },
+                    )
+                    NavigationBarItem(
+                        selected = selectedPage == PAGE_CONTACTS,
+                        onClick = {
+                            scope.launch { pagerState.animateScrollToPage(PAGE_CONTACTS) }
+                        },
+                        label = { Text(stringResource(Res.string.contacts)) },
+                        icon = { Icon(Icons.Filled.Contacts, contentDescription = null) },
+                    )
+                    NavigationBarItem(
+                        selected = selectedPage == PAGE_SETTINGS,
+                        onClick = {
+                            scope.launch { pagerState.animateScrollToPage(PAGE_SETTINGS) }
+                        },
+                        label = { Text(stringResource(Res.string.settings)) },
+                        icon = { Icon(Icons.Filled.Settings, contentDescription = null) },
+                    )
+                    NavigationBarItem(
+                        selected = selectedPage == PAGE_PROFILE,
+                        onClick = {
+                            scope.launch { pagerState.animateScrollToPage(PAGE_PROFILE) }
+                        },
+                        label = { Text(stringResource(Res.string.profile)) },
+                        icon = { Icon(Icons.Filled.Person, contentDescription = null) },
+                    )
                 }
             }
         }
@@ -204,7 +234,7 @@ fun MainScreen(
                 blurProgress = chatMenuBlurProgress,
                 modifier = Modifier
                     .fillMaxSize()
-                    .zIndex(1f),
+                    .zIndex(2f),
             )
         }
 
@@ -214,7 +244,7 @@ fun MainScreen(
             screenHeightPx = constraints.maxHeight,
             modifier = Modifier
                 .fillMaxSize()
-                .zIndex(2f),
+                .zIndex(3f),
         )
     }
 }

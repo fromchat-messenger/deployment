@@ -50,6 +50,7 @@ fun ContactsTab() {
         Box(
             modifier = Modifier
                 .fillMaxSize()
+                .mainPagerBottomInset()
                 .padding(innerPadding),
             contentAlignment = Alignment.Center
         ) {

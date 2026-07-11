@@ -66,7 +66,6 @@ import ru.fromchat.api.local.db.store.ProfileCache
 import ru.fromchat.api.local.db.store.UserStatusStore
 import ru.fromchat.api.local.db.store.visibleUsername
 import ru.fromchat.api.schema.user.User
-import ru.fromchat.chat_last_mesaage
 import ru.fromchat.chat_preview_attachment
 import ru.fromchat.chat_preview_image
 import ru.fromchat.chat_preview_image_emoji
@@ -98,7 +97,6 @@ fun ChatsSearchScreen(
         imageOnly = stringResource(Res.string.chat_preview_image, imageEmoji),
         attachmentOnly = stringResource(Res.string.chat_preview_attachment),
     )
-    val defaultLastMessage = stringResource(Res.string.chat_last_mesaage)
     val searchHint = stringResource(Res.string.search_hint)
     val searchBarHint = stringResource(Res.string.search_title)
     var dmConversations by remember { mutableStateOf<List<CachedConversation>>(emptyList()) }
@@ -157,7 +155,7 @@ fun ChatsSearchScreen(
         try {
             val users = ApiClient.searchUsers(querySnapshot)
             if (querySnapshot == searchText.trim().lowercase().trimStart('@')) {
-                users.forEach { ProfileCache.mergeFromDmUser(it) }
+                users.forEach { ProfileCache.mergeFromUser(it) }
                 remoteUsers = users
                 lastCompletedSearchQuery = querySnapshot
             }
@@ -313,7 +311,7 @@ fun ChatsSearchScreen(
                             remoteUsers = remoteUsers.filter { user ->
                                 filteredDmConversations.none { it.otherUserId == user.id }
                             },
-                            defaultLastMessage = defaultLastMessage,
+                            defaultLastMessage = "",
                             statusMap = statusMap,
                             modifier = Modifier.fillMaxSize(),
                             onOpenConversation = { userId ->

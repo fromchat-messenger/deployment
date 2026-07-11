@@ -45,6 +45,7 @@ import ru.fromchat.logs_title
 import ru.fromchat.settings_hub_about_sub
 import ru.fromchat.settings_hub_logs_sub
 import ru.fromchat.ui.LocalNavController
+import ru.fromchat.ui.main.mainPagerBottomInset
 
 val SettingsStepHorizontalPadding = 24.dp
 
@@ -69,6 +70,7 @@ fun SettingsTab() {
             Modifier
                 .fillMaxSize()
                 .verticalScroll()
+                .mainPagerBottomInset()
                 .padding(innerPadding)
         ) {
             Category(Modifier.padding(top = 16.dp)) {

@@ -54,9 +54,7 @@ fun DmScreen(
         if (activeInstanceId.isBlank()) return@LaunchedEffect
         val peerId = peerUserId ?: return@LaunchedEffect
         if (peerId <= 0) return@LaunchedEffect
-        if (panel.getState().messages.isEmpty()) {
-            panel.loadMessages()
-        }
+        panel.loadMessages()
     }
 
     LaunchedEffect(activeInstanceId, peerUserId) {

@@ -1,6 +1,8 @@
 package ru.fromchat.ui.main.chats
 
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.AnimatedVisibilityScope
+import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.Spring
 import androidx.compose.animation.core.SpringSpec
@@ -27,10 +29,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CheckCircle
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.RadioButtonUnchecked
 import androidx.compose.material3.ExperimentalMaterial3ExpressiveApi
 import androidx.compose.material3.CircularProgressIndicator
@@ -59,8 +63,11 @@ import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.layout.onGloballyPositioned
 import androidx.compose.ui.layout.positionInRoot
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
+import ru.fromchat.ui.components.SearchBar
+import ru.fromchat.ui.components.SearchBarSharedElement
 import com.pr0gramm3r101.components.Category
 import com.pr0gramm3r101.components.ListItem
 import com.pr0gramm3r101.components.ListItemPosition
@@ -92,8 +99,9 @@ import ru.fromchat.ui.profile.displayNameForUi
 import ru.fromchat.ui.profile.peerIsDeleted
 
 internal object ChatListLayout {
-    private const val CATEGORY_TOP_SPACER = 0
-    const val PUBLIC_CHAT_ROW = CATEGORY_TOP_SPACER + 1
+    const val SEARCH_BAR_ROW = 0
+    const val COLLAPSED_SCROLL_TARGET_ROW = SEARCH_BAR_ROW + 1
+    const val PUBLIC_CHAT_ROW = SEARCH_BAR_ROW + 1
 
     fun dmRow(dmIndex: Int): Int = PUBLIC_CHAT_ROW + 1 + dmIndex
 
@@ -113,8 +121,8 @@ internal object SearchListIndices {
 private val ChatListCategoryMargin = PaddingValues(
     start = 16.dp,
     end = 16.dp,
-    top = 16.dp,
-    bottom = 20.dp,
+    top = 8.dp,
+    bottom = 12.dp,
 )
 
 @Composable
@@ -154,6 +162,15 @@ internal fun ChatConversationsList(
     contextMenuState: ChatContextMenuState,
     overlayCloneReady: Boolean,
     rowRevealProgress: Float,
+    listContentPadding: PaddingValues = PaddingValues(0.dp),
+    showSearchBar: Boolean = false,
+    searchBarHeight: Dp = 56.dp,
+    searchBarVisibleFraction: Float = 1f,
+    searchBarPlaceholder: String = "",
+    onSearchBarActivate: () -> Unit = {},
+    sharedTransitionScope: SharedTransitionScope? = null,
+    animatedVisibilityScope: AnimatedVisibilityScope? = null,
+    listBottomInset: Dp = 0.dp,
     modifier: Modifier = Modifier,
     onOpenPublic: () -> Unit,
     onOpenConversation: (Int) -> Unit,
@@ -188,8 +205,45 @@ internal fun ChatConversationsList(
         state = listState,
         modifier = modifier,
         userScrollEnabled = !scrollBlocked,
-        contentPadding = PaddingValues(bottom = 12.dp),
+        contentPadding = listContentPadding,
     ) {
+        if (showSearchBar) {
+            item(key = "chats-search-bar") {
+                val fraction = searchBarVisibleFraction.coerceIn(0f, 1f)
+                val visibleHeight = searchBarHeight * fraction
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(visibleHeight)
+                        .clip(RoundedCornerShape(0.dp)),
+                ) {
+                    if (fraction > 0f) {
+                        SearchBar(
+                            query = "",
+                            onQueryChange = {},
+                            onSearch = {},
+                            placeholder = searchBarPlaceholder,
+                            readOnly = true,
+                            onReadOnlyActivate = onSearchBarActivate,
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .height(searchBarHeight)
+                                .padding(horizontal = 16.dp),
+                            leadingIcon = {
+                                Icon(
+                                    imageVector = Icons.Default.Search,
+                                    contentDescription = null,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                )
+                            },
+                            sharedTransitionScope = sharedTransitionScope,
+                            animatedVisibilityScope = animatedVisibilityScope,
+                            sharedElementKey = SearchBarSharedElement,
+                        )
+                    }
+                }
+            }
+        }
         if (groupCount > 0) {
             Category(
                 margin = ChatListCategoryMargin,
@@ -325,6 +379,11 @@ internal fun ChatConversationsList(
                         item { ChatListItemSpacer() }
                     }
                 }
+            }
+        }
+        if (listBottomInset > 0.dp) {
+            item(key = "chats-main-chrome-bottom-spacer") {
+                Spacer(Modifier.height(listBottomInset))
             }
         }
     }
@@ -712,15 +771,17 @@ internal fun PublicChatRowContent(
     modifier: Modifier = Modifier,
 ) {
     val preview = publicChatPreviewState?.displayText(defaultLastMessage) ?: defaultLastMessage
+    val pendingIndicator = publicChatPreviewState?.pendingIndicator
+        ?: ChatListPreviewPendingIndicator.None
+    val showPreview = preview.isNotBlank() || pendingIndicator != ChatListPreviewPendingIndicator.None
 
     ListItem(
         headline = publicChatTitle.orEmpty(),
-        supportingSlot = if (publicChatTitle != null) {
+        supportingSlot = if (publicChatTitle != null && showPreview) {
             {
                 ChatListPreviewSupportingText(
                     preview = preview,
-                    pendingIndicator = publicChatPreviewState?.pendingIndicator
-                        ?: ChatListPreviewPendingIndicator.None,
+                    pendingIndicator = pendingIndicator,
                     uploadProgress = publicChatPreviewState?.uploadProgress,
                 )
             }
@@ -884,21 +945,28 @@ internal fun DmConversationRowContent(
     val status = statusMap[conversation.otherUserId]
     val typingUsers = status?.typingUsernames.orEmpty()
     val isTyping = typingUsers.isNotEmpty()
+    val showPreview = isTyping ||
+        preview.isNotBlank() ||
+        conversation.lastMessagePendingIndicator != ChatListPreviewPendingIndicator.None
     val isOnline = status?.online ?: (cached?.online == true)
     val listSurfaceColor = MaterialTheme.colorScheme.surfaceContainerLow
     ListItem(
         headline = peerTitle,
         headlineSlot = { ChatListHeadlineWithBadge(peerTitle, conversation.otherUserId) },
-        supportingSlot = {
-            if (isTyping) {
-                TypingIndicator(typingUsers = typingUsers)
-            } else {
-                ChatListPreviewSupportingText(
-                    preview = preview,
-                    pendingIndicator = conversation.lastMessagePendingIndicator,
-                    uploadProgress = conversation.lastMessageUploadProgress,
-                )
+        supportingSlot = if (showPreview) {
+            {
+                if (isTyping) {
+                    TypingIndicator(typingUsers = typingUsers)
+                } else {
+                    ChatListPreviewSupportingText(
+                        preview = preview,
+                        pendingIndicator = conversation.lastMessagePendingIndicator,
+                        uploadProgress = conversation.lastMessageUploadProgress,
+                    )
+                }
             }
+        } else {
+            null
         },
         containerColor = Color.Transparent,
         position = listItemPosition,
@@ -989,6 +1057,10 @@ internal fun ChatListPreviewSupportingText(
     val indicatorColor = previewColor.copy(alpha = 0.7f)
     val sendingCd = stringResource(Res.string.cd_chat_preview_sending)
     val uploadingCd = stringResource(Res.string.cd_chat_preview_uploading)
+
+    if (preview.isBlank() && pendingIndicator == ChatListPreviewPendingIndicator.None) {
+        return
+    }
 
     Row(
         modifier = modifier,

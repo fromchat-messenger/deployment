@@ -5,7 +5,9 @@ import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animate
+import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInVertically
@@ -25,6 +27,7 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
@@ -42,10 +45,25 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.Scaffold
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.statusBars
+import androidx.compose.foundation.layout.union
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.derivedStateOf
+import androidx.compose.ui.graphics.Color
+import dev.chrisbanes.haze.HazeState
+import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.hazeSource
+import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
+import dev.chrisbanes.haze.materials.HazeMaterials
+import dev.chrisbanes.haze.rememberHazeState
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
@@ -62,7 +80,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.RectangleShape
+import androidx.compose.ui.input.nestedscroll.NestedScrollConnection
+import androidx.compose.ui.input.nestedscroll.NestedScrollSource
+import androidx.compose.ui.input.nestedscroll.nestedScroll
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.PointerEventPass
@@ -74,6 +94,7 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
@@ -107,7 +128,6 @@ import ru.fromchat.cd_close_selection
 import ru.fromchat.cd_selection_more
 import ru.fromchat.chat_delete_confirm_body
 import ru.fromchat.chat_delete_confirm_title
-import ru.fromchat.chat_last_mesaage
 import ru.fromchat.chat_preview_attachment
 import ru.fromchat.chat_preview_image
 import ru.fromchat.chat_preview_image_emoji
@@ -119,13 +139,12 @@ import ru.fromchat.status_connecting
 import ru.fromchat.status_updating
 import ru.fromchat.account_suspended
 import ru.fromchat.ui.LocalNavController
+import ru.fromchat.ui.main.LocalMainChromeInsets
 import ru.fromchat.ui.chat.panels.dm.DmNav
 import ru.fromchat.ui.components.BackHandler
 import ru.fromchat.ui.components.BrandTitle
 import ru.fromchat.ui.components.ConnectingEllipsis
 import ru.fromchat.ui.components.PredictiveBackHandler
-import ru.fromchat.ui.components.SearchBar
-import ru.fromchat.ui.components.SearchBarSharedElement
 import ru.fromchat.ui.components.SuspendedAccountSupportSheet
 import ru.fromchat.ui.components.Text
 import ru.fromchat.utils.NetworkConnectivity
@@ -135,17 +154,225 @@ import kotlin.time.Duration.Companion.milliseconds
 import kotlin.time.TimeSource
 
 private const val ChatContextMenuHoldGateMs = 250L
+private val ChatsSearchBarHeight = 56.dp
+private val ChatsTopBarContentHeight = 64.dp
+
+private fun LazyListState.searchBarHeightPx(collapseRangePx: Float): Float {
+    val collapseProgress = when (firstVisibleItemIndex) {
+        ChatListLayout.SEARCH_BAR_ROW ->
+            (firstVisibleItemScrollOffset / collapseRangePx).coerceIn(0f, 1f)
+        else -> 1f
+    }
+    return collapseRangePx * (1f - collapseProgress)
+}
+
+private class SearchBarCollapseSnapState {
+    var settledHeightPx: Float = 0f
+    var gestureStartHeightPx: Float = 0f
+    var gestureMinHeightPx: Float = 0f
+    var gestureMaxHeightPx: Float = 0f
+    var dragActive: Boolean = false
+    var suppressNextEnd: Boolean = false
+}
+
+private class SearchBarCollapseController(
+    private val listState: LazyListState,
+    private val collapseRangePx: Float,
+    val snapState: SearchBarCollapseSnapState = SearchBarCollapseSnapState(),
+) {
+    private fun currentSearchBarHeightPx(): Float = listState.searchBarHeightPx(collapseRangePx)
+
+    fun beginGesture() {
+        val currentHeightPx = currentSearchBarHeightPx()
+        snapState.dragActive = true
+        snapState.gestureStartHeightPx = currentHeightPx
+        snapState.gestureMinHeightPx = currentHeightPx
+        snapState.gestureMaxHeightPx = currentHeightPx
+    }
+
+    fun updateGestureBounds() {
+        if (!snapState.dragActive) return
+        val currentHeightPx = currentSearchBarHeightPx()
+        snapState.gestureMinHeightPx = minOf(snapState.gestureMinHeightPx, currentHeightPx)
+        snapState.gestureMaxHeightPx = maxOf(snapState.gestureMaxHeightPx, currentHeightPx)
+    }
+
+    private suspend fun snapSearchCollapsed() {
+        if (listState.layoutInfo.totalItemsCount > ChatListLayout.COLLAPSED_SCROLL_TARGET_ROW) {
+            listState.animateScrollToItem(ChatListLayout.COLLAPSED_SCROLL_TARGET_ROW)
+        } else {
+            listState.animateScrollToItem(
+                ChatListLayout.SEARCH_BAR_ROW,
+                scrollOffset = collapseRangePx.toInt(),
+            )
+        }
+        snapState.settledHeightPx = 0f
+    }
+
+    private suspend fun snapSearchExpanded() {
+        listState.animateScrollToItem(
+            ChatListLayout.SEARCH_BAR_ROW,
+            scrollOffset = 0,
+        )
+        snapState.settledHeightPx = collapseRangePx
+    }
+
+    suspend fun onScrollGestureEnded() {
+        val index = listState.firstVisibleItemIndex
+        val offset = listState.firstVisibleItemScrollOffset
+        val endHeightPx = currentSearchBarHeightPx()
+        val fullyExpanded = index == ChatListLayout.SEARCH_BAR_ROW &&
+            offset == 0 &&
+            endHeightPx >= collapseRangePx - 1f
+        val fullyCollapsed = endHeightPx <= 0f ||
+            index > ChatListLayout.SEARCH_BAR_ROW
+
+        val heightReducedByGesture = snapState.gestureStartHeightPx - snapState.gestureMinHeightPx >= 1f
+        val heightIncreasedByGesture = snapState.gestureMaxHeightPx - snapState.gestureStartHeightPx >= 1f
+        val startedExpanded = snapState.gestureStartHeightPx >= collapseRangePx - 1f
+
+        if (fullyExpanded && !heightReducedByGesture) {
+            snapState.settledHeightPx = collapseRangePx
+            return
+        }
+        if (fullyCollapsed && !heightIncreasedByGesture) {
+            snapState.settledHeightPx = 0f
+            return
+        }
+
+        val shouldCollapse = heightReducedByGesture ||
+            (startedExpanded && !fullyExpanded) ||
+            (!fullyExpanded && !fullyCollapsed && !heightIncreasedByGesture)
+        val shouldExpand = heightIncreasedByGesture && snapState.gestureStartHeightPx < collapseRangePx - 1f
+
+        snapState.suppressNextEnd = true
+        try {
+            when {
+                shouldCollapse && !shouldExpand -> snapSearchCollapsed()
+                shouldExpand -> snapSearchExpanded()
+                !fullyExpanded -> snapSearchCollapsed()
+                else -> snapState.settledHeightPx = endHeightPx
+            }
+        } finally {
+            snapState.suppressNextEnd = false
+        }
+    }
+
+    fun nestedScrollConnection(enabled: Boolean): NestedScrollConnection =
+        object : NestedScrollConnection {
+            override fun onPreScroll(
+                available: Offset,
+                source: NestedScrollSource,
+            ): Offset {
+                if (!enabled || source != NestedScrollSource.UserInput || snapState.suppressNextEnd) {
+                    return Offset.Zero
+                }
+                if (!snapState.dragActive) {
+                    beginGesture()
+                }
+                updateGestureBounds()
+                return Offset.Zero
+            }
+
+            override fun onPostScroll(
+                consumed: Offset,
+                available: Offset,
+                source: NestedScrollSource,
+            ): Offset {
+                if (!enabled || source != NestedScrollSource.UserInput) {
+                    return Offset.Zero
+                }
+                if (!snapState.dragActive && !snapState.suppressNextEnd) {
+                    beginGesture()
+                }
+                updateGestureBounds()
+                return Offset.Zero
+            }
+        }
+}
+
+@Composable
+private fun rememberSearchBarCollapseSnap(
+    listState: LazyListState,
+    collapseRangePx: Float,
+    enabled: Boolean,
+): Modifier {
+    val controller = remember(listState, collapseRangePx) {
+        SearchBarCollapseController(listState, collapseRangePx)
+    }
+
+    LaunchedEffect(listState, enabled, collapseRangePx) {
+        if (!enabled) return@LaunchedEffect
+        controller.snapState.settledHeightPx = listState.searchBarHeightPx(collapseRangePx)
+        snapshotFlow {
+            listState.firstVisibleItemIndex to listState.firstVisibleItemScrollOffset
+        }.collect {
+            controller.updateGestureBounds()
+        }
+    }
+
+    LaunchedEffect(listState, enabled, controller) {
+        if (!enabled) return@LaunchedEffect
+        snapshotFlow { listState.isScrollInProgress }.collect { scrolling ->
+            if (scrolling) {
+                if (controller.snapState.suppressNextEnd) return@collect
+                if (!controller.snapState.dragActive) {
+                    controller.beginGesture()
+                }
+                return@collect
+            }
+            if (!controller.snapState.dragActive) return@collect
+            controller.snapState.dragActive = false
+            if (controller.snapState.suppressNextEnd) return@collect
+            controller.onScrollGestureEnded()
+        }
+    }
+
+    return Modifier.nestedScroll(
+        remember(controller, enabled) { controller.nestedScrollConnection(enabled) },
+    )
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun chatsTopAppBarColors(blurReveal: Float) = TopAppBarDefaults.topAppBarColors(
+    containerColor = MaterialTheme.colorScheme.surface.copy(alpha = 1f - blurReveal.coerceIn(0f, 1f)),
+    scrolledContainerColor = Color.Transparent,
+)
+
+@OptIn(ExperimentalHazeMaterialsApi::class)
+@Composable
+private fun ChatsTopBarHazeBackdrop(
+    hazeState: HazeState,
+    blurReveal: Float,
+    modifier: Modifier = Modifier,
+) {
+    Box(
+        modifier = modifier
+            .graphicsLayer { alpha = blurReveal.coerceIn(0f, 1f) }
+            .hazeEffect(
+                state = hazeState,
+                style = HazeMaterials.thin(),
+            ),
+    )
+}
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ChatsNormalTopBar(
+    blurReveal: Float,
     titleKey: String,
     connectingTitle: String,
     updatingTitle: String,
+    searchCollapseProgress: Float,
+    searchContentDescription: String,
+    onSearchClick: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
     TopAppBar(
         modifier = modifier,
+        windowInsets = WindowInsets.statusBars,
+        colors = chatsTopAppBarColors(blurReveal),
         title = {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -203,12 +430,26 @@ private fun ChatsNormalTopBar(
                 }
             }
         },
+        actions = {
+            IconButton(
+                onClick = onSearchClick,
+                modifier = Modifier.graphicsLayer {
+                    alpha = searchCollapseProgress.coerceIn(0f, 1f)
+                },
+            ) {
+                Icon(
+                    imageVector = Icons.Default.Search,
+                    contentDescription = searchContentDescription,
+                )
+            }
+        },
     )
 }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ChatsSelectionTopBar(
+    blurReveal: Float,
     selectedCountTitle: String,
     closeSelectionCd: String,
     bulkActions: ChatsBulkActions,
@@ -224,6 +465,8 @@ private fun ChatsSelectionTopBar(
 
     TopAppBar(
         modifier = modifier,
+        windowInsets = WindowInsets.statusBars,
+        colors = chatsTopAppBarColors(blurReveal),
         navigationIcon = {
             IconButton(onClick = onClose) {
                 Icon(
@@ -275,7 +518,7 @@ private fun ChatsSelectionTopBar(
     )
 }
 
-@OptIn(ExperimentalMaterial3Api::class)
+@OptIn(ExperimentalMaterial3Api::class, ExperimentalHazeMaterialsApi::class)
 @Composable
 fun ChatsTab(
     isVisible: Boolean = true,
@@ -330,12 +573,12 @@ fun ChatsTab(
     val publicChatProfile = publicChatProfileFromFlow ?: publicChatProfileFromDisk
     val searchBarHint = stringResource(Res.string.search_title)
     val tabListState = rememberLazyListState()
+    val topChromeHazeState = rememberHazeState(blurEnabled = isVisible)
     val statusMap by UserStatusStore.status.collectAsState()
     var subscribedDmUserIds by remember { mutableStateOf<Set<Int>>(emptySet()) }
     val statusSubscriptionScope = rememberCoroutineScope()
     val suspensionState by ApiClient.suspensionState.collectAsState()
     var showSuspendedSupportSheet by remember { mutableStateOf(false) }
-    val defaultLastMessage = stringResource(Res.string.chat_last_mesaage)
 
     LaunchedEffect(previewStrings.imageOnly, previewStrings.attachmentOnly, activeInstanceId) {
         MessageCacheStore.listPreviewStrings = previewStrings
@@ -369,13 +612,16 @@ fun ChatsTab(
 
     fun enterSelectionModeFor(target: ChatContextMenuTarget, userId: Int?) {
         haptic(HapticFeedbackEvent.SelectionModeEntered)
-        scope.launch { selectionTransitionProgress.snapTo(0f) }
         listMode = ChatsListMode.Selecting
         publicChatSelected = false
         selectedOtherUserIds = emptySet()
         when (target) {
             ChatContextMenuTarget.Public -> publicChatSelected = true
             ChatContextMenuTarget.Dm -> userId?.let { selectedOtherUserIds = setOf(it) }
+        }
+        scope.launch {
+            selectionTransitionProgress.snapTo(0f)
+            selectionTransitionProgress.animateTo(1f, ChatSelectionTransitionSpring)
         }
     }
 
@@ -432,12 +678,6 @@ fun ChatsTab(
 
             refreshDmList()
             exitSelectionMode()
-        }
-    }
-
-    LaunchedEffect(listMode) {
-        if (listMode == ChatsListMode.Selecting) {
-            selectionTransitionProgress.animateTo(1f, ChatSelectionTransitionSpring)
         }
     }
 
@@ -526,21 +766,8 @@ fun ChatsTab(
         }
     }
 
-    LaunchedEffect(serverConfig, activeInstanceId, connectionStatus) {
-        if (activeInstanceId.isBlank() || connectionStatus != ConnectionStatus.CONNECTED) return@LaunchedEffect
-
-        runCatching {
-            ApiClient.getDmConversations()
-        }.onSuccess { conversations ->
-            runCatching {
-                conversations.forEach { ProfileCache.mergeFromDmUser(it.user) }
-                MessageRepository.replaceDmConversations(conversations, previewStrings)
-                dmConversations = ChatListReorderController.applyOrdered(
-                    MessageRepository.loadCachedDmConversations(),
-                )
-            }
-        }
-
+    LaunchedEffect(serverConfig, activeInstanceId) {
+        if (activeInstanceId.isBlank()) return@LaunchedEffect
         runCatching { PublicChatProfileCache.hydrateFromDisk() }
     }
 
@@ -636,17 +863,203 @@ fun ChatsTab(
             },
         )
 
-        Scaffold(
-            topBar = {
-                Box {
+        val density = LocalDensity.current
+        val mainChromeInsets = LocalMainChromeInsets.current
+        val statusBarTopDp = mainChromeInsets.top
+        val fixedTopBarHeight = statusBarTopDp + ChatsTopBarContentHeight
+        val searchCollapseProgress by remember(density, tabListState) {
+            derivedStateOf {
+                val collapseRangePx = with(density) { ChatsSearchBarHeight.toPx() }.coerceAtLeast(1f)
+                when (tabListState.firstVisibleItemIndex) {
+                    ChatListLayout.SEARCH_BAR_ROW ->
+                        (tabListState.firstVisibleItemScrollOffset / collapseRangePx).coerceIn(0f, 1f)
+                    else -> 1f
+                }
+            }
+        }
+        val collapseRangePx = with(density) { ChatsSearchBarHeight.toPx() }.coerceAtLeast(1f)
+        val searchCollapseSnapEnabled = isVisible && !selectionMode && selectionProgress <= 0f
+        val searchCollapseSnapModifier = rememberSearchBarCollapseSnap(
+            listState = tabListState,
+            collapseRangePx = collapseRangePx,
+            enabled = searchCollapseSnapEnabled,
+        )
+        val searchBarVisibleFraction = (1f - selectionProgress).coerceIn(0f, 1f)
+        val topBarSearchReveal = searchCollapseProgress * (1f - selectionProgress)
+        val listScrollFromTopPx by remember(density, tabListState) {
+            derivedStateOf {
+                when (tabListState.firstVisibleItemIndex) {
+                    ChatListLayout.SEARCH_BAR_ROW -> tabListState.firstVisibleItemScrollOffset.toFloat()
+                    else -> collapseRangePx + tabListState.firstVisibleItemScrollOffset.toFloat()
+                }
+            }
+        }
+        val topBarBlurReveal by animateFloatAsState(
+            targetValue = if (listScrollFromTopPx >= 1f) 1f else 0f,
+            animationSpec = tween(durationMillis = 200),
+            label = "chatsTopBarBlurReveal",
+        )
+
+        Box(modifier = Modifier.fillMaxSize()) {
+            if (suspensionState.isSuspended) {
+                ListItem(
+                    headline = accountSuspendedTitle,
+                    position = ListItemPosition.START,
+                    groupItemCount = 1,
+                    divider = false,
+                    leadingContent = {
+                        Icon(
+                            imageVector = Icons.Rounded.Block,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.error,
+                        )
+                    },
+                    onClick = { showSuspendedSupportSheet = true },
+                    modifier = Modifier
+                        .align(Alignment.TopCenter)
+                        .fillMaxWidth()
+                        .padding(
+                            top = fixedTopBarHeight + ChatsSearchBarHeight * searchBarVisibleFraction,
+                            start = 12.dp,
+                            end = 12.dp,
+                        ),
+                )
+            } else {
+                key(profileCacheRevision) {
+                    ChatConversationsList(
+                        listState = tabListState,
+                        listFilter = ChatListFilter.Active,
+                        conversations = dmConversations,
+                        publicChatTitle = publicChatTitle,
+                        publicChatPreviewState = publicChatPreviewState,
+                        defaultLastMessage = "",
+                        statusMap = statusMap,
+                        listMode = listMode,
+                        selectionTransitionProgress = selectionProgress,
+                        publicChatSelected = publicChatSelected,
+                        selectedOtherUserIds = selectedOtherUserIds,
+                        contextMenuState = contextMenuState,
+                        overlayCloneReady = overlayCloneReady,
+                        rowRevealProgress = rowRevealProgress,
+                        listContentPadding = PaddingValues(top = fixedTopBarHeight),
+                        showSearchBar = true,
+                        searchBarHeight = ChatsSearchBarHeight,
+                        searchBarVisibleFraction = searchBarVisibleFraction,
+                        searchBarPlaceholder = searchBarHint,
+                        onSearchBarActivate = onOpenSearch,
+                        sharedTransitionScope = sharedTransitionScope,
+                        animatedVisibilityScope = animatedVisibilityScope,
+                        listBottomInset = mainChromeInsets.bottom,
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .hazeSource(topChromeHazeState)
+                            .then(searchCollapseSnapModifier),
+                        onOpenPublic = {
+                            when {
+                                selectionMode && publicChatSelected -> publicChatSelected = false
+                                selectionMode -> publicChatSelected = true
+                                else -> navController.navigate("chats/publicChat")
+                            }
+                        },
+                        onOpenConversation = { userId ->
+                            when {
+                                selectionMode && userId in selectedOtherUserIds -> {
+                                    selectedOtherUserIds -= userId
+                                }
+
+                                selectionMode -> selectedOtherUserIds += userId
+
+                                userId != 0 -> navController.navigate(DmNav.chatRoute(userId))
+                            }
+                        },
+                        onAvatarContextMenuPressStart = { lazyIndex, target, userId, rowOffset, rowSize, position, groupCount ->
+                            if (suspensionState.isSuspended) return@ChatConversationsList
+                            avatarPressMark = TimeSource.Monotonic.markNow()
+                            contextMenuState = ChatContextMenuState(
+                                phase = ChatContextMenuPhase.Pressing,
+                                target = target,
+                                otherUserId = userId,
+                                listIndex = lazyIndex,
+                                rowOffset = rowOffset,
+                                rowSize = rowSize,
+                                listItemPosition = position,
+                                groupItemCount = groupCount,
+                            )
+                        },
+                        onAvatarContextMenuPressEnd = {
+                            avatarPressMark = null
+                            if (contextMenuState.phase == ChatContextMenuPhase.Pressing) {
+                                contextMenuState = ChatContextMenuState()
+                            }
+                        },
+                        onAvatarContextMenuOpen = { lazyIndex, target, userId, _, rowOffset, rowSize, position, groupCount ->
+                            if (suspensionState.isSuspended) return@ChatConversationsList
+                            val pressMark = avatarPressMark
+                            if (pressMark == null ||
+                                pressMark.elapsedNow() < ChatContextMenuHoldGateMs.milliseconds
+                            ) {
+                                return@ChatConversationsList
+                            }
+                            if (contextMenuState.phase != ChatContextMenuPhase.Pressing) {
+                                return@ChatConversationsList
+                            }
+                            haptic(HapticFeedbackEvent.ContextMenuOpened)
+                            chatContextMenuOverlay.overlayCloneReady = false
+                            contextMenuState = ChatContextMenuState(
+                                phase = ChatContextMenuPhase.Animating,
+                                target = target,
+                                otherUserId = userId,
+                                listIndex = lazyIndex,
+                                rowOffset = rowOffset,
+                                rowSize = rowSize,
+                                listItemPosition = position,
+                                groupItemCount = groupCount,
+                            )
+                        },
+                        onEnterSelectionMode = { _, target, userId ->
+                            if (suspensionState.isSuspended) return@ChatConversationsList
+                            enterSelectionModeFor(target, userId)
+                        },
+                        onRowPositioned = { lazyIndex, offset, size ->
+                            if (
+                                contextMenuState.listIndex == lazyIndex &&
+                                contextMenuState.phase != ChatContextMenuPhase.Closed
+                            ) {
+                                contextMenuState = contextMenuState.copy(
+                                    rowOffset = offset,
+                                    rowSize = size,
+                                )
+                            }
+                        },
+                    )
+                }
+            }
+
+            Box(
+                modifier = Modifier
+                    .align(Alignment.TopCenter)
+                    .fillMaxWidth()
+                    .height(fixedTopBarHeight),
+            ) {
+                ChatsTopBarHazeBackdrop(
+                    hazeState = topChromeHazeState,
+                    blurReveal = topBarBlurReveal,
+                    modifier = Modifier.matchParentSize(),
+                )
+                Box(modifier = Modifier.fillMaxWidth()) {
                     ChatsNormalTopBar(
+                        blurReveal = topBarBlurReveal,
                         titleKey = titleKey,
                         connectingTitle = connectingTitle,
                         updatingTitle = updatingTitle,
+                        searchCollapseProgress = topBarSearchReveal,
+                        searchContentDescription = searchBarHint,
+                        onSearchClick = onOpenSearch,
                         modifier = Modifier.graphicsLayer { alpha = 1f - selectionProgress },
                     )
                     if (selectionMode || selectionProgress > 0f) {
                         ChatsSelectionTopBar(
+                            blurReveal = topBarBlurReveal,
                             selectedCountTitle = selectedCountTitle,
                             closeSelectionCd = closeSelectionCd,
                             bulkActions = bulkActions,
@@ -662,160 +1075,6 @@ fun ChatsTab(
                             modifier = Modifier.graphicsLayer { alpha = selectionProgress },
                         )
                     }
-                }
-            },
-        ) { innerPadding ->
-            Column(
-                modifier = Modifier
-                    .fillMaxSize()
-                    .padding(innerPadding),
-            ) {
-                val searchBarReveal = 1f - selectionProgress
-                Box(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .graphicsLayer { alpha = searchBarReveal }
-                        .height((56.dp * searchBarReveal).coerceAtLeast(0.dp))
-                        .clip(RectangleShape),
-                ) {
-                    if (searchBarReveal > 0f) {
-                        SearchBar(
-                            query = "",
-                            onQueryChange = {},
-                            onSearch = {},
-                            placeholder = searchBarHint,
-                            readOnly = true,
-                            onReadOnlyActivate = onOpenSearch,
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 12.dp),
-                            leadingIcon = {
-                                Icon(
-                                    imageVector = Icons.Default.Search,
-                                    contentDescription = null,
-                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
-                                )
-                            },
-                            sharedTransitionScope = sharedTransitionScope,
-                            animatedVisibilityScope = animatedVisibilityScope,
-                            sharedElementKey = SearchBarSharedElement,
-                        )
-                    }
-                }
-
-                if (suspensionState.isSuspended) {
-                    ListItem(
-                        headline = accountSuspendedTitle,
-                        position = ListItemPosition.START,
-                        groupItemCount = 1,
-                        divider = false,
-                        leadingContent = {
-                            Icon(
-                                imageVector = Icons.Rounded.Block,
-                                contentDescription = null,
-                                tint = MaterialTheme.colorScheme.error,
-                            )
-                        },
-                        onClick = { showSuspendedSupportSheet = true },
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                    )
-                } else {
-                key(profileCacheRevision) {
-                ChatConversationsList(
-                    listState = tabListState,
-                    listFilter = ChatListFilter.Active,
-                    conversations = dmConversations,
-                    publicChatTitle = publicChatTitle,
-                    publicChatPreviewState = publicChatPreviewState,
-                    defaultLastMessage = defaultLastMessage,
-                    statusMap = statusMap,
-                    listMode = listMode,
-                    selectionTransitionProgress = selectionProgress,
-                    publicChatSelected = publicChatSelected,
-                    selectedOtherUserIds = selectedOtherUserIds,
-                    contextMenuState = contextMenuState,
-                    overlayCloneReady = overlayCloneReady,
-                    rowRevealProgress = rowRevealProgress,
-                    modifier = Modifier.fillMaxSize(),
-                    onOpenPublic = {
-                        when {
-                            selectionMode && publicChatSelected -> publicChatSelected = false
-                            selectionMode -> publicChatSelected = true
-                            else -> navController.navigate("chats/publicChat")
-                        }
-                    },
-                    onOpenConversation = { userId ->
-                        when {
-                            selectionMode && userId in selectedOtherUserIds -> {
-                                selectedOtherUserIds -= userId
-                            }
-
-                            selectionMode -> selectedOtherUserIds += userId
-
-                            userId != 0 -> navController.navigate(DmNav.chatRoute(userId))
-                        }
-                    },
-                    onAvatarContextMenuPressStart = { lazyIndex, target, userId, rowOffset, rowSize, position, groupCount ->
-                        if (suspensionState.isSuspended) return@ChatConversationsList
-                        avatarPressMark = TimeSource.Monotonic.markNow()
-                        contextMenuState = ChatContextMenuState(
-                            phase = ChatContextMenuPhase.Pressing,
-                            target = target,
-                            otherUserId = userId,
-                            listIndex = lazyIndex,
-                            rowOffset = rowOffset,
-                            rowSize = rowSize,
-                            listItemPosition = position,
-                            groupItemCount = groupCount,
-                        )
-                    },
-                    onAvatarContextMenuPressEnd = {
-                        avatarPressMark = null
-                        if (contextMenuState.phase == ChatContextMenuPhase.Pressing) {
-                            contextMenuState = ChatContextMenuState()
-                        }
-                    },
-                    onAvatarContextMenuOpen = { lazyIndex, target, userId, _, rowOffset, rowSize, position, groupCount ->
-                        if (suspensionState.isSuspended) return@ChatConversationsList
-                        val pressMark = avatarPressMark
-                        if (pressMark == null ||
-                            pressMark.elapsedNow() < ChatContextMenuHoldGateMs.milliseconds
-                        ) {
-                            return@ChatConversationsList
-                        }
-                        if (contextMenuState.phase != ChatContextMenuPhase.Pressing) return@ChatConversationsList
-                        haptic(HapticFeedbackEvent.ContextMenuOpened)
-                        chatContextMenuOverlay.overlayCloneReady = false
-                        contextMenuState = ChatContextMenuState(
-                            phase = ChatContextMenuPhase.Animating,
-                            target = target,
-                            otherUserId = userId,
-                            listIndex = lazyIndex,
-                            rowOffset = rowOffset,
-                            rowSize = rowSize,
-                            listItemPosition = position,
-                            groupItemCount = groupCount,
-                        )
-                    },
-                    onEnterSelectionMode = { _, target, userId ->
-                        if (suspensionState.isSuspended) return@ChatConversationsList
-                        enterSelectionModeFor(target, userId)
-                    },
-                    onRowPositioned = { lazyIndex, offset, size ->
-                        if (
-                            contextMenuState.listIndex == lazyIndex &&
-                            contextMenuState.phase != ChatContextMenuPhase.Closed
-                        ) {
-                            contextMenuState = contextMenuState.copy(
-                                rowOffset = offset,
-                                rowSize = size,
-                            )
-                        }
-                    },
-                )
-                }
                 }
             }
         }
@@ -893,7 +1152,7 @@ fun ChatsTab(
                 publicChatTitle = publicChatTitle,
                 publicChatPreviewState = publicChatPreviewState,
                 publicChatLink = publicChatLink,
-                defaultLastMessage = defaultLastMessage,
+                defaultLastMessage = "",
                 conversations = dmConversations,
                 statusMap = statusMap,
                 listMode = listMode,

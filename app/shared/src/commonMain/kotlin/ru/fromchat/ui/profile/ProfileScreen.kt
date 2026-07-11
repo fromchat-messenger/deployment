@@ -298,10 +298,12 @@ fun ProfileScreen(
 
     val latestUi by rememberUpdatedState(state)
     val profileCacheRevision by ProfileCache.revision.collectAsState()
-    val isOwnProfileLookup = targetUserId == null && targetUsername == null
+    val isViewingOwnProfile = ownUserId != null && (
+        (targetUserId == null && targetUsername == null) || targetUserId == ownUserId
+        )
 
     LaunchedEffect(profileCacheRevision) {
-        if (!isOwnProfileLookup) return@LaunchedEffect
+        if (!isViewingOwnProfile) return@LaunchedEffect
         ownUserId?.let { ProfileCache.get(it) }?.let { cached ->
             if (hasDisplayableProfile(cached, initialDisplayName, ownUserId)) {
                 state = latestUi.copy(profile = cached, isLoading = false, error = null)
@@ -315,7 +317,7 @@ fun ProfileScreen(
         handle.getStateFlow(ProfileRoutes.REFRESH_KEY, false).collect { shouldRefresh ->
             if (!shouldRefresh) return@collect
             handle[ProfileRoutes.REFRESH_KEY] = false
-            if (targetUserId != null || targetUsername != null) return@collect
+            if (!isViewingOwnProfile) return@collect
             try {
                 val refreshed = ApiClient.getOwnProfile()
                 ProfileCache.put(refreshed)
@@ -350,7 +352,7 @@ fun ProfileScreen(
 
             return try {
                 val profile = when {
-                    targetUserId == null && targetUsername == null -> ApiClient.getOwnProfile()
+                    isViewingOwnProfile -> ApiClient.getOwnProfile()
                     targetUsername != null -> ApiClient.getProfileByUsername(targetUsername)
                     else -> ApiClient.getProfileById(targetUserId!!)
                 }
@@ -380,7 +382,7 @@ fun ProfileScreen(
                     )
 
                     ProfileCache.put(profile)
-                    if (targetUserId == null && targetUsername == null) {
+                    if (isViewingOwnProfile) {
                         ApiClient.applyOwnProfile(profile)
                     }
                     state = latestUi.copy(profile = profile, isLoading = false, error = null)
