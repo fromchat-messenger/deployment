@@ -56,7 +56,9 @@ import kotlinx.serialization.json.jsonPrimitive
 import ru.fromchat.AppForeground
 import ru.fromchat.Logger
 import ru.fromchat.api.DeferredStartupNetwork
+import ru.fromchat.api.ProfileUpdateSync
 import ru.fromchat.api.PublicChatProfileSync
+import ru.fromchat.api.StatusSubscriptionCoordinator
 import ru.fromchat.api.UpdateSyncManager
 import ru.fromchat.api.calls.CallStore
 import ru.fromchat.api.instance.bootstrapSessionInstance
@@ -240,6 +242,8 @@ fun App(
                 )
             }
             PublicChatProfileSync.ensureStarted()
+            ProfileUpdateSync.ensureStarted()
+            StatusSubscriptionCoordinator.ensureStarted()
         }
 
         startDestination = when {
@@ -442,6 +446,8 @@ fun App(
                                                 )
                                             }
                                             PublicChatProfileSync.ensureStarted()
+                                            ProfileUpdateSync.ensureStarted()
+            StatusSubscriptionCoordinator.ensureStarted()
                                             scheduleSessionInstanceNetworkRefresh()
                                         }
                                         WebSocketManager.connect(forceRestart = true)

@@ -16,6 +16,7 @@ object UserStatusStore {
     val status: StateFlow<Map<Int, UserStatus>> = _status.asStateFlow()
 
     fun update(userId: Int, online: Boolean, lastSeen: String?) {
+        if (userId <= 0) return
         _status.update { current ->
             val existing = current[userId] ?: UserStatus(online = false)
             current + (userId to existing.copy(online = online, lastSeen = lastSeen ?: existing.lastSeen))

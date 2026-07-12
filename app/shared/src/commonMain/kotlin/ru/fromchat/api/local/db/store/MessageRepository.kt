@@ -108,6 +108,9 @@ object MessageRepository {
     suspend fun ensureDmConversationRow(otherUserId: Int, displayName: String? = null) =
         MessageCacheStore.ensureDmConversationRow(otherUserId, displayName)
 
+    suspend fun patchDmConversationPeerProfile(otherUserId: Int) =
+        MessageCacheStore.patchDmConversationPeerProfile(otherUserId)
+
     suspend fun markDmConversationRead(otherUserId: Int, upToEnvelopeId: Int? = null) {
         runCatching { ApiClient.markDmConversationRead(otherUserId, upToEnvelopeId) }
         MessageCacheStore.markDmConversationReadLocally(otherUserId, upToEnvelopeId)

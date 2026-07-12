@@ -543,6 +543,33 @@ object MessageCacheStore {
             ?: ProfileCache.get(otherUserId)?.displayName?.trim()?.takeIf { it.isNotEmpty() }
             ?: ProfileCache.get(otherUserId)?.visibleUsername(ApiClient.user?.id).orEmpty()
 
+    suspend fun patchDmConversationPeerProfile(otherUserId: Int) {
+        if (otherUserId <= 0) return
+        val iid = instanceId()
+        val convId = conversationIdForDm(otherUserId)
+        withContext(Dispatchers.Default) {
+            val existing = db.messageDatabaseQueries
+                .selectConversationById(iid, convId)
+                .executeAsOneOrNull() ?: return@withContext
+            val label = resolveDmConversationDisplayLabel(otherUserId, null)
+            if (label.isEmpty()) return@withContext
+            if (label == existing.displayName) return@withContext
+            db.messageDatabaseQueries.upsertConversation(
+                instanceId = iid,
+                id = existing.id,
+                type = existing.type,
+                otherUserId = existing.otherUserId,
+                displayName = label,
+                lastMessageId = existing.lastMessageId,
+                lastMessagePreview = existing.lastMessagePreview,
+                unreadCount = existing.unreadCount,
+                updatedAt = existing.updatedAt,
+                archived = existing.archived,
+            )
+            DmConversationListNotifier.notifyChanged()
+        }
+    }
+
     suspend fun markDmConversationReadLocally(otherUserId: Int, upToEnvelopeId: Int? = null) {
         val iid = instanceId()
         val convId = conversationIdForDm(otherUserId)

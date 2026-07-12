@@ -59,6 +59,7 @@ import kotlinx.coroutines.launch
 import org.jetbrains.compose.resources.stringResource
 import ru.fromchat.Res
 import ru.fromchat.api.ApiClient
+import ru.fromchat.api.StatusSubscriptionCoordinator
 import ru.fromchat.api.local.db.store.CachedConversation
 import ru.fromchat.api.local.db.store.MessageCacheStore
 import ru.fromchat.api.local.db.store.MessageRepository
@@ -208,10 +209,14 @@ fun ChatsSearchScreen(
                 val toUnsubscribe = subscribedDmUserIds - visibleIds
 
                 toSubscribe.forEach { userId ->
-                    runCatching { ApiClient.sendSubscribeStatus(userId) }
+                    statusSubscriptionScope.launch {
+                        StatusSubscriptionCoordinator.acquire(userId)
+                    }
                 }
                 toUnsubscribe.forEach { userId ->
-                    runCatching { ApiClient.sendUnsubscribeStatus(userId) }
+                    statusSubscriptionScope.launch {
+                        StatusSubscriptionCoordinator.release(userId)
+                    }
                 }
                 subscribedDmUserIds = visibleIds
             }
@@ -222,7 +227,7 @@ fun ChatsSearchScreen(
             hideIme()
             if (subscribedDmUserIds.isNotEmpty()) {
                 statusSubscriptionScope.launch {
-                    subscribedDmUserIds.forEach { ApiClient.sendUnsubscribeStatus(it) }
+                    subscribedDmUserIds.forEach { StatusSubscriptionCoordinator.release(it) }
                 }
             }
             subscribedDmUserIds = emptySet()

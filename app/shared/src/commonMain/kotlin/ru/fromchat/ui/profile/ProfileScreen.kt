@@ -88,6 +88,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -124,8 +125,11 @@ import ru.fromchat.Res
 import ru.fromchat.action_copy
 import ru.fromchat.action_edit
 import ru.fromchat.api.ApiClient
+import ru.fromchat.api.StatusSubscriptionCoordinator
 import ru.fromchat.api.PublicChatProfileSync
 import ru.fromchat.api.local.WebSocketManager
+import ru.fromchat.api.local.db.store.ConnectionStateStore
+import ru.fromchat.api.local.db.store.ConnectionStatus
 import ru.fromchat.api.calls.CallStore
 import ru.fromchat.api.local.db.store.ProfileCache
 import ru.fromchat.api.local.db.store.UserStatus
@@ -207,6 +211,17 @@ private fun hasDisplayableProfile(
             profile.username.isNotBlank()
         ))
 
+/** Live profile row for [userId]; recomposes when [ProfileCache] updates (e.g. WS bio change). */
+@Composable
+private fun rememberLiveProfile(userId: Int?): UserProfile? {
+    if (userId == null || userId <= 0) return null
+    val flow = remember(userId) { ProfileCache.observeUser(userId) }
+    return flow
+        .collectAsState(initial = ProfileCache.get(userId))
+        .value
+        ?.takeUnless { it.isClientPreviewOnly }
+}
+
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun ProfileScreen(
@@ -253,12 +268,14 @@ fun ProfileScreen(
     val targetUsername = username?.trim()?.takeIf { it.isNotBlank() }
     val ownUserId = ApiClient.user?.id?.takeIf { it > 0 }
 
-    targetUserId?.let { id ->
-        ProfileCache.mergePreview(
-            id = id,
-            displayName = initialDisplayName?.takeIf { it.isNotBlank() },
-            profilePicture = initialProfilePictureUrl?.takeIf { it.isNotBlank() },
-        )
+    LaunchedEffect(targetUserId, initialDisplayName, initialProfilePictureUrl) {
+        targetUserId?.let { id ->
+            ProfileCache.mergePreview(
+                id = id,
+                displayName = initialDisplayName?.takeIf { it.isNotBlank() },
+                profilePicture = initialProfilePictureUrl?.takeIf { it.isNotBlank() },
+            )
+        }
     }
 
     val cacheLookupId = when {
@@ -297,17 +314,27 @@ fun ProfileScreen(
     }
 
     val latestUi by rememberUpdatedState(state)
-    val profileCacheRevision by ProfileCache.revision.collectAsState()
+    val connectionStatus by ConnectionStateStore.status.collectAsState()
+    val displayUserId = targetUserId
+        ?: state.profile?.id
+        ?: ownUserId?.takeIf { targetUsername == null }
+    val liveProfile = rememberLiveProfile(displayUserId)
+    val subscribedUserId = displayUserId
     val isViewingOwnProfile = ownUserId != null && (
         (targetUserId == null && targetUsername == null) || targetUserId == ownUserId
         )
 
-    LaunchedEffect(profileCacheRevision) {
-        if (!isViewingOwnProfile) return@LaunchedEffect
-        ownUserId?.let { ProfileCache.get(it) }?.let { cached ->
-            if (hasDisplayableProfile(cached, initialDisplayName, ownUserId)) {
-                state = latestUi.copy(profile = cached, isLoading = false, error = null)
-            }
+    LaunchedEffect(subscribedUserId, connectionStatus) {
+        val userId = subscribedUserId ?: return@LaunchedEffect
+        if (userId <= 0) return@LaunchedEffect
+        if (connectionStatus == ConnectionStatus.CONNECTED) {
+            Logger.d("ProfileScreen", "subscribeStatus userId=$userId")
+            StatusSubscriptionCoordinator.acquire(userId)
+        }
+        try {
+            awaitCancellation()
+        } finally {
+            StatusSubscriptionCoordinator.release(userId)
         }
     }
 
@@ -320,7 +347,7 @@ fun ProfileScreen(
             if (!isViewingOwnProfile) return@collect
             try {
                 val refreshed = ApiClient.getOwnProfile()
-                ProfileCache.put(refreshed)
+                ProfileCache.applyServerProfile(refreshed, force = true)
                 ApiClient.applyOwnProfile(refreshed)
                 state = latestUi.copy(profile = refreshed, error = null)
             } catch (_: Exception) {
@@ -332,7 +359,6 @@ fun ProfileScreen(
     }
 
     LaunchedEffect(lookupMode, lookupIdentifier) {
-        ProfileCache.hydrateFromDisk()
         resolveCachedProfile(targetUserId, targetUsername, ownUserId)?.let { cached ->
             if (hasDisplayableProfile(cached, initialDisplayName, ownUserId)) {
                 state = latestUi.copy(profile = cached, isLoading = false, error = null)
@@ -377,15 +403,18 @@ fun ProfileScreen(
                         "ProfileScreen",
                         "load success: mode=$lookupMode identifier=$lookupIdentifier -> " +
                             "id=${profile.id}, username='${profile.username}', " +
-                            "display='${profile.displayName}', deleted=${profile.deleted}, " +
+                            "display='${profile.displayName}', bio='${profile.bio?.take(32)}', " +
+                            "deleted=${profile.deleted}, " +
                             "suspended=${profile.suspended}"
                     )
 
-                    ProfileCache.put(profile)
+                    val normalized = profile.copy(isClientPreviewOnly = false)
+                    ProfileCache.applyServerProfile(normalized, force = false)
+                    val displayProfile = ProfileCache.get(profile.id) ?: normalized
+                    state = latestUi.copy(profile = displayProfile, isLoading = false, error = null)
                     if (isViewingOwnProfile) {
-                        ApiClient.applyOwnProfile(profile)
+                        ApiClient.applyOwnProfile(displayProfile)
                     }
-                    state = latestUi.copy(profile = profile, isLoading = false, error = null)
                     loadedSuccessfully = true
                     true
                 }
@@ -474,7 +503,18 @@ fun ProfileScreen(
     val verifiedSupport = stringResource(Res.string.profile_verified_support)
     val verifyPromptSupport = stringResource(Res.string.profile_verify_prompt_support)
 
-    val profile = state.profile ?: resolveCachedProfile(targetUserId, targetUsername, ownUserId)
+    val profile = liveProfile
+        ?: state.profile
+        ?: resolveCachedProfile(targetUserId, targetUsername, ownUserId)
+
+    LaunchedEffect(displayUserId, liveProfile?.bio, state.profile?.bio) {
+        Logger.d(
+            "ProfileScreen",
+            "profile bio displayUserId=$displayUserId live='${liveProfile?.bio?.take(48)}' " +
+                "state='${state.profile?.bio?.take(48)}' shown='${profile?.bio?.take(48)}'",
+        )
+    }
+
     if (hasDisplayableProfile(profile, initialDisplayName, ownUserId)) {
         hasShownContent.value = true
     }
@@ -1405,12 +1445,13 @@ private fun ProfileLoadedBody(
                 if (showDetailsBio) {
                     val position = listItemPositionInGroup(detailIndex, detailCount)
                     detailIndex++
+                    val bioContent = resolvedProfile.bio.orEmpty()
                     ListItem(
                         headline = headlineBio,
                         supportingSlot = {
-                            ProfileBioMarkdown(
-                                content = resolvedProfile.bio.orEmpty(),
-                            )
+                            key(resolvedProfile.id, bioContent) {
+                                ProfileBioMarkdown(content = bioContent)
+                            }
                         },
                         divider = true,
                         position = position,

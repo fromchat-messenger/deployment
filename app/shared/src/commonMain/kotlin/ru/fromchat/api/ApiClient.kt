@@ -600,12 +600,13 @@ object ApiClient {
         }
 
         ProfileCache.get(currentUser?.id ?: 0)?.let { cached ->
-            ProfileCache.put(
+            ProfileCache.applyServerProfile(
                 cached.copy(
                     username = response.username,
                     displayName = response.displayName,
                     bio = response.bio,
-                )
+                ),
+                force = true,
             )
         }
 

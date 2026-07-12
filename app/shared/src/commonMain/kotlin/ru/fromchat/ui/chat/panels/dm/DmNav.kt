@@ -4,6 +4,7 @@ import androidx.compose.animation.AnimatedVisibilityScope
 import androidx.compose.animation.SharedTransitionScope
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
@@ -79,11 +80,13 @@ fun DmProfileRoute(
         ?: stateSnapshot.title.takeIf { it.isNotBlank() }
     val initialProfilePictureUrl = stateSnapshot.titleAvatar?.profilePictureUrl
 
-    ProfileCache.mergePreview(
-        id = otherUserId,
-        displayName = initialDisplayName,
-        profilePicture = initialProfilePictureUrl,
-    )
+    LaunchedEffect(otherUserId, initialDisplayName, initialProfilePictureUrl) {
+        ProfileCache.mergePreview(
+            id = otherUserId,
+            displayName = initialDisplayName,
+            profilePicture = initialProfilePictureUrl,
+        )
+    }
 
     ProfileScreen(
         userId = otherUserId,

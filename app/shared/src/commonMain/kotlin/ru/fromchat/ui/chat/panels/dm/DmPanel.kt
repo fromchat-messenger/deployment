@@ -15,6 +15,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import ru.fromchat.api.ApiClient
 import ru.fromchat.api.local.cache.CacheContext
 import ru.fromchat.api.local.db.store.ProfileCache
+import ru.fromchat.api.local.db.store.UserStatusStore
 import ru.fromchat.api.local.db.store.MessageCacheStore
 import ru.fromchat.api.local.messages.ActiveDmChatTracker
 import ru.fromchat.api.local.db.store.MessageRepository
@@ -91,6 +92,11 @@ class DmPanel(
                 updateState { it.copy(typingUsers = users) }
             }
         }
+        coroutineScope.launch {
+            ProfileCache.revision.collect {
+                applyCachedPeerProfileOrReset()
+            }
+        }
         coroutineScope.launch(Dispatchers.Default) {
             AttachmentDownloadNotifier.progressFlow.collect { event ->
                 if (event !is AttachmentDownloadProgress.Success || event.messageId <= 0) return@collect
@@ -128,7 +134,8 @@ class DmPanel(
                     }
                     return@launch
                 }
-                ProfileCache.put(profile)
+                ProfileCache.applyServerProfile(profile, force = false)
+                UserStatusStore.update(profile.id, profile.online, profile.lastSeen)
                 val displayName = profile.displayNameText(ApiClient.user?.id)
                 if (displayName.isNotBlank()) {
                     withContext(Dispatchers.Main) {
@@ -152,6 +159,7 @@ class DmPanel(
         scope.launch(Dispatchers.Default) {
             val cached = ProfileCache.get(otherUserId)
             val displayName = cached?.displayNameText(ApiClient.user?.id).orEmpty()
+            cached?.let { UserStatusStore.update(it.id, it.online, it.lastSeen) }
             withContext(Dispatchers.Main) {
                 if (displayName.isNotBlank()) {
                     applyPeerTitle(displayName, cached?.profilePicture)

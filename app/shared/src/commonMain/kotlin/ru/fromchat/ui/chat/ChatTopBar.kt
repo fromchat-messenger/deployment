@@ -182,7 +182,7 @@ fun ChatTopBarInner(
 
         Column(
             modifier = Modifier
-                .wrapContentWidth()
+                .fillMaxWidth()
                 .padding(horizontal = 4.dp, vertical = 2.dp),
             horizontalAlignment = Alignment.Start,
         ) {
@@ -208,6 +208,7 @@ fun ChatTopBarInner(
             }
 
             AnimatedContent(
+                modifier = Modifier.fillMaxWidth(),
                 targetState = subtitleKey,
                 transitionSpec = {
                     (slideInVertically { it / 2 } + fadeIn()) togetherWith

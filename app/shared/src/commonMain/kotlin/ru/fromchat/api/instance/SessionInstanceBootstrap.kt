@@ -8,7 +8,9 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import ru.fromchat.api.ApiClient
 import ru.fromchat.api.ChatListSync
+import ru.fromchat.api.ProfileUpdateSync
 import ru.fromchat.api.PublicChatProfileSync
+import ru.fromchat.api.StatusSubscriptionCoordinator
 import ru.fromchat.api.local.db.store.InstanceRegistryStore
 import ru.fromchat.api.local.db.store.MessageRepository
 import ru.fromchat.api.local.db.store.PublicChatProfileCache
@@ -39,6 +41,8 @@ private suspend fun activateInstance(instanceId: String) {
     CacheContext.setActiveInstance(instanceId, ApiClient.user?.id)
     runCatching { PublicChatProfileCache.hydrateFromDiskImmediate(instanceId) }
     PublicChatProfileSync.ensureStarted()
+    ProfileUpdateSync.ensureStarted()
+    StatusSubscriptionCoordinator.ensureStarted()
     ChatListSync.ensureStarted()
     scheduleOutboxProcessing(instanceId)
     scheduleAttachmentResumeAfterSession()

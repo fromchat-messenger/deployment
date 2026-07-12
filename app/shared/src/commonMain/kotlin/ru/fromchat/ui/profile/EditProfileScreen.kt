@@ -298,7 +298,8 @@ fun EditProfileScreen(
                         lastSeen = ApiClient.user?.last_seen,
                         createdAt = existing?.createdAt,
                     )
-                    ProfileCache.put(updatedProfile)
+                    ProfileCache.applyServerProfile(updatedProfile, force = true)
+                    ApiClient.applyOwnProfile(updatedProfile)
                 }
 
                 showSnack(savedMessage)

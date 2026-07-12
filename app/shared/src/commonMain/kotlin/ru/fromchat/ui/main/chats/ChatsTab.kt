@@ -109,6 +109,7 @@ import ru.fromchat.action_delete
 import ru.fromchat.action_mark_read
 import ru.fromchat.api.ApiClient
 import ru.fromchat.api.ChatListSync
+import ru.fromchat.api.StatusSubscriptionCoordinator
 import ru.fromchat.api.calls.CallStore
 import ru.fromchat.api.local.WebSocketManager
 import ru.fromchat.api.local.cache.CacheContext
@@ -715,12 +716,16 @@ fun ChatsTab(
             .collect { visibleIds ->
                 if (connectionStatus == ConnectionStatus.CONNECTED) {
                     visibleIds.forEach { userId ->
-                        runCatching { ApiClient.sendSubscribeStatus(userId) }
+                        statusSubscriptionScope.launch {
+                            StatusSubscriptionCoordinator.acquire(userId)
+                        }
                     }
                 }
 
                 (subscribedDmUserIds - visibleIds).forEach { userId ->
-                    runCatching { ApiClient.sendUnsubscribeStatus(userId) }
+                    statusSubscriptionScope.launch {
+                        StatusSubscriptionCoordinator.release(userId)
+                    }
                 }
 
                 subscribedDmUserIds = visibleIds
@@ -731,7 +736,7 @@ fun ChatsTab(
         onDispose {
             if (subscribedDmUserIds.isNotEmpty()) {
                 statusSubscriptionScope.launch {
-                    subscribedDmUserIds.forEach { ApiClient.sendUnsubscribeStatus(it) }
+                    subscribedDmUserIds.forEach { StatusSubscriptionCoordinator.release(it) }
                 }
             }
             subscribedDmUserIds = emptySet()

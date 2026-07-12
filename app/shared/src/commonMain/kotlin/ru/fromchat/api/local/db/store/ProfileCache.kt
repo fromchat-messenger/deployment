@@ -6,6 +6,9 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
@@ -60,6 +63,10 @@ object ProfileCache {
     }
 
     fun get(userId: Int): UserProfile? = profiles[userId]
+
+    /** Emits whenever this user's cached profile changes (including bio). */
+    fun observeUser(userId: Int): Flow<UserProfile?> =
+        revision.map { get(userId) }.distinctUntilChanged()
 
     fun findByUsername(username: String): UserProfile? =
         username.trim().takeIf { it.isNotEmpty() }?.let { needle ->
@@ -135,6 +142,18 @@ object ProfileCache {
             }
         }
         val cur = profiles
+        val existing = cur[profile.id]
+        if (
+            existing != null &&
+            !existing.isClientPreviewOnly &&
+            existing.bio != profile.bio
+        ) {
+            ru.fromchat.Logger.d(
+                "ProfileCache",
+                "put overwrite id=${profile.id} bio '${existing.bio?.take(48)}' -> " +
+                    "'${profile.bio?.take(48)}' preview=${profile.isClientPreviewOnly}",
+            )
+        }
         profiles = cur + (profile.id to profile)
         bumpRevision()
         val instanceId = loadedInstanceId
@@ -143,6 +162,35 @@ object ProfileCache {
                 runCatching { ProfileCacheStore.put(instanceId, profile) }
             }
         }
+    }
+
+    /**
+     * Applies a full server profile payload (HTTP or WebSocket).
+     * When [force] is false, an existing full (non-preview) cache row is kept so a slow HTTP
+     * response cannot overwrite a fresher WebSocket update.
+     */
+    fun applyServerProfile(profile: UserProfile, force: Boolean = false) {
+        if (profile.id <= 0) return
+        val normalized = profile.copy(isClientPreviewOnly = false)
+        if (!force) {
+            val existing = get(profile.id)
+            if (existing != null && !existing.isClientPreviewOnly) {
+                if (existing.bio != normalized.bio) {
+                    ru.fromchat.Logger.d(
+                        "ProfileCache",
+                        "applyServerProfile skipped stale HTTP id=${profile.id} " +
+                            "cachedBio='${existing.bio?.take(48)}' httpBio='${normalized.bio?.take(48)}'",
+                    )
+                }
+                return
+            }
+        }
+        ru.fromchat.Logger.d(
+            "ProfileCache",
+            "applyServerProfile applied force=$force id=${profile.id} " +
+                "bio='${normalized.bio?.take(48)}'",
+        )
+        put(normalized)
     }
 
     fun remove(userId: Int) {
@@ -333,10 +381,25 @@ object ProfileCache {
         val instanceId = CacheContext.activeInstanceId.value.trim()
         persistMutex.withLock {
             loadedInstanceId = instanceId
-            profiles = if (instanceId.isNotEmpty()) {
+            val diskProfiles = if (instanceId.isNotEmpty()) {
                 runCatching { ProfileCacheStore.loadAllForInstance(instanceId) }.getOrDefault(emptyMap())
             } else {
                 emptyMap()
+            }
+            if (profiles.isEmpty()) {
+                profiles = diskProfiles
+            } else {
+                val merged = profiles.toMutableMap()
+                for ((userId, diskProfile) in diskProfiles) {
+                    val inMemory = merged[userId]
+                    when {
+                        inMemory == null -> merged[userId] = diskProfile
+                        inMemory.isClientPreviewOnly && !diskProfile.isClientPreviewOnly ->
+                            merged[userId] = diskProfile
+                        // Keep in-memory full profiles over disk — disk may lag behind WS.
+                    }
+                }
+                profiles = merged
             }
             pruneUnusableClientPreviewsLocked()
             bumpRevision()

@@ -22,7 +22,7 @@ object DeferredStartupNetwork {
             runCatching {
                 val profile = ApiClient.getOwnProfile()
                 ApiClient.applyOwnProfile(profile)
-                ProfileCache.put(profile)
+                ProfileCache.applyServerProfile(profile, force = false)
             }
             runCatching { syncPushTokenAfterStartup() }
         }

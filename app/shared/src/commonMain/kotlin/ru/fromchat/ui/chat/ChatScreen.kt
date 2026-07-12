@@ -81,6 +81,7 @@ import kotlinx.serialization.json.jsonPrimitive
 import org.jetbrains.compose.resources.stringResource
 import ru.fromchat.Logger
 import ru.fromchat.Res
+import ru.fromchat.presence_recently
 import ru.fromchat.api.ApiClient
 import ru.fromchat.api.calls.CallStore
 import ru.fromchat.api.local.AttachmentMediaLog
@@ -89,6 +90,8 @@ import ru.fromchat.api.local.db.store.ConnectionStateStore
 import ru.fromchat.api.local.db.store.ConnectionStatus
 import ru.fromchat.api.local.db.store.MessageRepository
 import ru.fromchat.api.local.db.store.ProfileCache
+import ru.fromchat.api.StatusSubscriptionCoordinator
+import ru.fromchat.api.local.db.store.UserStatus
 import ru.fromchat.api.local.db.store.UserStatusStore
 import ru.fromchat.api.local.download.SavableMessageImage
 import ru.fromchat.api.local.download.ensureFileDownloadedForSave
@@ -408,7 +411,8 @@ fun ChatScreen(
         peerDeleted = peerIsDeleted(userId = userId, currentUserId = currentUserId)
         if (!peerDeleted) {
             runCatching { ApiClient.getProfileById(userId) }.onSuccess { profile ->
-                ProfileCache.put(profile)
+                ProfileCache.applyServerProfile(profile, force = false)
+                UserStatusStore.update(profile.id, profile.online, profile.lastSeen)
                 peerDeleted = peerIsDeleted(
                     userId = userId,
                     currentUserId = currentUserId,
@@ -422,6 +426,7 @@ fun ChatScreen(
     var showSuspendedSupportSheet by remember { mutableStateOf(false) }
     val statusConnecting = stringResource(Res.string.status_connecting)
     val statusUpdating = stringResource(Res.string.status_updating)
+    val presenceRecently = stringResource(Res.string.presence_recently)
     val chatGroupLabel = stringResource(Res.string.chat_group_label)
     val cdCall = stringResource(Res.string.cd_call)
     LaunchedEffect(currentTypingUsers) {
@@ -440,9 +445,14 @@ fun ChatScreen(
             }
         }
         panelState.profileUserId != null -> {
-            val userStatus = statusMap[panelState.profileUserId]
-            val statusText = userStatus?.let {
-                formatLastSeen(it.online, it.lastSeen, lastSeenFormat)
+            val peerId = panelState.profileUserId!!
+            val userStatus = statusMap[peerId]
+                ?: ProfileCache.get(peerId)?.let { profile ->
+                    UserStatus(online = profile.online, lastSeen = profile.lastSeen)
+                }
+            val statusText = userStatus?.let { status ->
+                formatLastSeen(status.online, status.lastSeen, lastSeenFormat)
+                    .ifEmpty { if (!status.online) presenceRecently else "" }
             }.orEmpty()
             if (statusText.isNotEmpty()) {
                 "presence:$statusText"
@@ -461,16 +471,14 @@ fun ChatScreen(
 
     // Subscribe to other user's status when DM is visible; re-subscribe after reconnect
     LaunchedEffect(panelState.profileUserId, connectionStatus) {
-        val userId = panelState.profileUserId
-        if (userId != null) {
-            if (connectionStatus == ConnectionStatus.CONNECTED) {
-                runCatching { ApiClient.sendSubscribeStatus(userId) }
-            }
-            try {
-                kotlinx.coroutines.awaitCancellation()
-            } finally {
-                runCatching { ApiClient.sendUnsubscribeStatus(userId) }
-            }
+        val userId = panelState.profileUserId ?: return@LaunchedEffect
+        if (connectionStatus == ConnectionStatus.CONNECTED) {
+            StatusSubscriptionCoordinator.acquire(userId)
+        }
+        try {
+            kotlinx.coroutines.awaitCancellation()
+        } finally {
+            StatusSubscriptionCoordinator.release(userId)
         }
     }
 
