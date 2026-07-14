@@ -7,17 +7,11 @@ Gitea:           git.fromchat.ru/FromChat/{same repo name}
 
 Official GitHub URLs fall back to Gitea when GitHub fails.
 URLs already on git.fromchat.ru use Gitea APIs directly.
-
-Gitea on the same host is preferred via Docker host-gateway :3000 (plain HTTP),
-because public https://git.fromchat.ru goes through Caddy TLS and can fail from
-containers when certs are unavailable or hairpin routing breaks.
 """
 from __future__ import annotations
 
 import json
-import os
 import re
-import ssl
 import sys
 import urllib.error
 import urllib.parse
@@ -28,10 +22,7 @@ SEMVER = re.compile(r"^v(\d+)\.(\d+)(?:\.(\d+))?$")
 GITHUB_ORG = "fromchat-messenger"
 GITEA_ORG = "FromChat"
 GITHUB_OFFICIAL_PREFIX = f"https://github.com/{GITHUB_ORG}/"
-GITEA_PUBLIC_HOST = "git.fromchat.ru"
-GITEA_PUBLIC_BASE = f"https://{GITEA_PUBLIC_HOST}"
-# Kept for callers / docs; resolved dynamically via gitea_base_candidates().
-GITEA_BASE = GITEA_PUBLIC_BASE
+GITEA_BASE = "https://git.fromchat.ru"
 
 OFFICIAL_GITHUB_REPOS = frozenset(
     {
@@ -40,8 +31,6 @@ OFFICIAL_GITHUB_REPOS = frozenset(
         f"https://github.com/{GITHUB_ORG}/app.git",
     }
 )
-
-_gitea_working_base: str | None = None
 
 
 def normalize_repo_url(url: str) -> str:
@@ -91,32 +80,6 @@ def _normalize_token(token: str | None) -> str | None:
     return cleaned or None
 
 
-def gitea_base_candidates() -> list[str]:
-    """Prefer same-host Gitea (:3000) before public HTTPS (Caddy TLS)."""
-    out: list[str] = []
-    env = os.environ.get("GITEA_BASE", "").strip().rstrip("/")
-    if env:
-        out.append(env)
-    # Caddyfile reverse_proxies git.fromchat.ru to host :3000
-    for host in (
-        "host.docker.internal:3000",
-        "172.17.0.1:3000",
-        "172.18.0.1:3000",
-        "172.19.0.1:3000",
-        "172.20.0.1:3000",
-        "172.21.0.1:3000",
-    ):
-        out.append(f"http://{host}")
-    out.append(GITEA_PUBLIC_BASE)
-    seen: set[str] = set()
-    unique: list[str] = []
-    for base in out:
-        if base and base not in seen:
-            seen.add(base)
-            unique.append(base)
-    return unique
-
-
 def _auth_headers(token: str | None, *, gitea: bool = False) -> dict[str, str]:
     token = _normalize_token(token)
     headers: dict[str, str] = {"User-Agent": "fromchat-git-remote"}
@@ -135,86 +98,35 @@ def _auth_headers(token: str | None, *, gitea: bool = False) -> dict[str, str]:
     return headers
 
 
-def _http_get_once(
-    url: str,
-    token: str | None,
-    *,
-    gitea: bool = False,
-    insecure: bool = False,
-) -> bytes:
-    headers = _auth_headers(token, gitea=gitea)
-    if gitea:
-        host = urllib.parse.urlparse(url).hostname or ""
-        if host and host not in (GITEA_PUBLIC_HOST, "localhost", "127.0.0.1"):
-            headers["Host"] = GITEA_PUBLIC_HOST
-    req = urllib.request.Request(url, headers=headers)
-    context = ssl._create_unverified_context() if insecure else None
-    with urllib.request.urlopen(req, timeout=45, context=context) as resp:
-        return resp.read()
-
-
 def _http_get(url: str, token: str | None, *, gitea: bool = False) -> bytes:
-    if not gitea:
-        return _http_get_once(url, token, gitea=False)
-    try:
-        return _http_get_once(url, token, gitea=True)
-    except Exception:
-        if url.startswith("https://"):
-            try:
-                return _http_get_once(url, token, gitea=True, insecure=True)
-            except Exception:
-                pass
-        parsed = urllib.parse.urlparse(url)
-        return _gitea_get(parsed.path + (f"?{parsed.query}" if parsed.query else ""), token)
-
-
-def _gitea_get(path: str, token: str | None) -> bytes:
-    """GET a Gitea path, probing host-gateway HTTP then public HTTPS."""
-    global _gitea_working_base
-    if not path.startswith("/"):
-        path = "/" + path
-
-    bases: list[str] = []
-    if _gitea_working_base:
-        bases.append(_gitea_working_base)
-    for candidate in gitea_base_candidates():
-        if candidate not in bases:
-            bases.append(candidate)
-
-    last_error: Exception | None = None
-    for base in bases:
-        url = f"{base.rstrip('/')}{path}"
-        insecure_opts = (False, True) if base.startswith("https://") else (False,)
-        for insecure in insecure_opts:
-            try:
-                data = _http_get_once(url, token, gitea=True, insecure=insecure)
-                if _gitea_working_base != base:
-                    _gitea_working_base = base
-                    if base != GITEA_PUBLIC_BASE:
-                        print(f"Using Gitea at {base}", file=sys.stderr)
-                return data
-            except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError, ssl.SSLError) as exc:
-                last_error = exc
-                continue
-    raise RuntimeError(f"Gitea request failed for {path}") from last_error
+    req = urllib.request.Request(
+        url,
+        headers=_auth_headers(token, gitea=gitea),
+    )
+    with urllib.request.urlopen(req, timeout=45) as resp:
+        return resp.read()
 
 
 def github_raw_url(owner: str, repo: str, ref: str, path: str) -> str:
     return f"https://raw.githubusercontent.com/{owner}/{repo}/{ref}/{path.lstrip('/')}"
 
 
-def gitea_api_raw_path(gitea_owner: str, gitea_repo: str, ref: str, path: str) -> str:
+def gitea_api_raw_url(gitea_owner: str, gitea_repo: str, ref: str, path: str) -> str:
+    """Gitea API raw file (supports branch/tag/commit via ?ref=)."""
     filepath = urllib.parse.quote(path.lstrip("/"), safe="/")
     ref_q = urllib.parse.quote(ref, safe="")
-    return f"/api/v1/repos/{gitea_owner}/{gitea_repo}/raw/{filepath}?ref={ref_q}"
+    return (
+        f"{GITEA_BASE}/api/v1/repos/{gitea_owner}/{gitea_repo}/raw/{filepath}?ref={ref_q}"
+    )
 
 
-def gitea_web_raw_paths(gitea_owner: str, gitea_repo: str, ref: str, path: str) -> list[str]:
+def gitea_web_raw_urls(gitea_owner: str, gitea_repo: str, ref: str, path: str) -> list[str]:
+    """Legacy/browser raw paths (tried if API raw fails)."""
     p = path.lstrip("/")
     ref_q = urllib.parse.quote(ref, safe="")
     return [
-        f"/{gitea_owner}/{gitea_repo}/raw/{ref_q}/{p}",
-        f"/{gitea_owner}/{gitea_repo}/raw/tag/{ref_q}/{p}",
+        f"{GITEA_BASE}/{gitea_owner}/{gitea_repo}/raw/{ref_q}/{p}",
+        f"{GITEA_BASE}/{gitea_owner}/{gitea_repo}/raw/tag/{ref_q}/{p}",
     ]
 
 
@@ -225,14 +137,14 @@ def fetch_gitea_raw(
     path: str,
     token: str | None,
 ) -> bytes:
-    paths = [gitea_api_raw_path(gitea_owner, gitea_repo, ref, path)]
-    paths.extend(gitea_web_raw_paths(gitea_owner, gitea_repo, ref, path))
+    urls = [gitea_api_raw_url(gitea_owner, gitea_repo, ref, path)]
+    urls.extend(gitea_web_raw_urls(gitea_owner, gitea_repo, ref, path))
 
     last_error: Exception | None = None
-    for rel in paths:
+    for url in urls:
         try:
-            return _gitea_get(rel, token)
-        except (RuntimeError, urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
+            return _http_get(url, token, gitea=True)
+        except (urllib.error.HTTPError, urllib.error.URLError, TimeoutError) as exc:
             last_error = exc
     raise RuntimeError(
         f"Failed to fetch {path} from git.fromchat.ru/{gitea_owner}/{gitea_repo}@{ref}"
@@ -279,7 +191,8 @@ def _gitea_paginated_json(path: str, token: str | None) -> list[dict]:
     page = 1
     while True:
         sep = "&" if "?" in path else "?"
-        chunk = json.loads(_gitea_get(f"{path}{sep}page={page}&limit=50", token).decode())
+        url = f"{GITEA_BASE}{path}{sep}page={page}&limit=50"
+        chunk = json.loads(_http_get(url, token, gitea=True).decode())
         if not isinstance(chunk, list):
             break
         if not chunk:
@@ -305,6 +218,7 @@ def _tags_from_gitea(gitea_owner: str, gitea_repo: str, token: str | None) -> se
     if out:
         return out
 
+    # Fallback: release tags
     for item in _gitea_paginated_json(
         f"/api/v1/repos/{gitea_owner}/{gitea_repo}/releases",
         token,
@@ -326,7 +240,7 @@ def fetch_semver_tags(repo_url: str, token: str | None = None) -> set[str]:
 
     try:
         return _tags_from_github(owner, repo, token)
-    except Exception:
+    except Exception as err:
         if not is_official_github_repo(repo_url):
             raise
         gitea_owner, gitea_repo = gitea_owner_repo(owner, repo)
@@ -391,7 +305,7 @@ def package_exists_gitea(gitea_owner: str, package: str, tag: str, token: str) -
     path = f"/api/v1/packages/{gitea_owner}/container/{short}/versions"
     try:
         versions = _gitea_paginated_json(path, token)
-    except (RuntimeError, urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError):
+    except (urllib.error.HTTPError, urllib.error.URLError, json.JSONDecodeError):
         return False
 
     for version in versions:
@@ -440,6 +354,8 @@ def package_version_exists(
 
 
 def resolve_git_token() -> str | None:
+    import os
+
     return _normalize_token(
         os.environ.get("UPDATER_TOKEN")
         or os.environ.get("GIT_TOKEN")

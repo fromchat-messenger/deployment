@@ -169,7 +169,6 @@ def patch_updater_service(service: dict[str, Any], *, keep_build: bool) -> None:
         "./compose.yml:/fromchat/compose.yml:rw",
         "/var/run/docker.sock:/var/run/docker.sock",
     ]
-    service["extra_hosts"] = ["host.docker.internal:host-gateway"]
     service["pull_policy"] = "never"
 
 

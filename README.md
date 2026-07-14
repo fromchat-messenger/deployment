@@ -76,11 +76,13 @@ The old entry point `backend/scripts/deploy.sh` redirects here.
   compose.yml                 # merged production stack (from backend ± web)
   .fromchat-version           # current release tag
   .env                        # copied from deployment/.env.prod
+  data/prod/caddy/            # persistent ACME certs (must not wipe)
   src/livekit/compose.yaml    # from backend (LiveKit config)
   fromchat.service            # systemd unit (classic deploy)
   updater/.env                # when updater selected
 ```
 
+Caddy stores Let's Encrypt material under `data/prod/caddy/`. Without that bind mount, every container recreate re-issues certs and hits LE rate limits.
 ## GitHub token (updater)
 
 When **updater** is selected, create a token with `read:packages` and `repo` (works for GitHub and git.fromchat.ru):

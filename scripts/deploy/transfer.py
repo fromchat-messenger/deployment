@@ -47,7 +47,9 @@ mkdir -p "$REMOTE_DEPLOY_PATH/config" \
     "$REMOTE_DEPLOY_PATH/data/prod/files" \
     "$REMOTE_DEPLOY_PATH/data/prod/logs/messaging" \
     "$REMOTE_DEPLOY_PATH/data/prod/logs/file_storage" \
-    "$REMOTE_DEPLOY_PATH/data/prod/postgres"
+    "$REMOTE_DEPLOY_PATH/data/prod/postgres" \
+    "$REMOTE_DEPLOY_PATH/data/prod/caddy/data" \
+    "$REMOTE_DEPLOY_PATH/data/prod/caddy/config"
 cd "$REMOTE_DEPLOY_PATH"
 
 # Match container UIDs (app=1000, messaging=1001, filestorage=1002).
