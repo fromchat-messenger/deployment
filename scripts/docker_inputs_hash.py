@@ -38,6 +38,23 @@ class DockerIgnoreRule:
     directory_only: bool
 
 
+# Applied in addition to .dockerignore so deploy cache hashes stay stable when
+# editors or deploy scripts write transient files into the build context.
+DEFAULT_EXTRA_IGNORE_PATTERNS: tuple[str, ...] = (
+    ".deploy-cache",
+    ".deploy-cache/**",
+    ".cursor",
+    ".cursor/**",
+    "**/.DS_Store",
+    "**/*~",
+    "**/*.swp",
+    "**/*.tmp",
+    ".env.prod",
+    ".env.local",
+    ".env.*.local",
+)
+
+
 def _read_dockerignore_rules(context: Path) -> list[DockerIgnoreRule]:
     p = context / ".dockerignore"
     if not p.exists() or not p.is_file():
@@ -100,6 +117,30 @@ def _is_ignored_by_dockerignore(rules: list[DockerIgnoreRule], rel_posix: str, i
         if _dockerignore_matches(r, rel_posix=rel_posix, is_dir=is_dir):
             ignored = not r.negated
     return ignored
+
+
+def _is_ignored_by_extra_patterns(rel_posix: str, is_dir: bool) -> bool:
+    rel = rel_posix.lstrip("./")
+    for pattern in DEFAULT_EXTRA_IGNORE_PATTERNS:
+        directory_only = pattern.endswith("/")
+        pat = pattern[:-1] if directory_only else pattern
+        if directory_only and not is_dir:
+            continue
+        if fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(rel.rsplit("/", 1)[-1], pat):
+            return True
+        if "/" in rel and fnmatch.fnmatch(rel, f"**/{pat}"):
+            return True
+    return False
+
+
+def _is_ignored(
+    rules: list[DockerIgnoreRule],
+    rel_posix: str,
+    is_dir: bool,
+) -> bool:
+    if _is_ignored_by_extra_patterns(rel_posix, is_dir):
+        return True
+    return _is_ignored_by_dockerignore(rules, rel_posix=rel_posix, is_dir=is_dir)
 
 
 def _dockerfile_logical_lines(dockerfile_text: str) -> list[str]:
@@ -242,7 +283,7 @@ def _collect_sources(context: Path, dockerfile_path: Path) -> list[Path]:
                     rel_root = root_p.relative_to(context).as_posix()
                     for fn in filenames:
                         rel = f"{rel_root}/{fn}" if rel_root != "." else fn
-                        if _is_ignored_by_dockerignore(dockerignore_rules, rel_posix=rel, is_dir=False):
+                        if _is_ignored(dockerignore_rules, rel_posix=rel, is_dir=False):
                             continue
                         if fnmatch.fnmatch(rel, src_norm) or fnmatch.fnmatch(fn, src_norm):
                             paths.append(context / rel)
@@ -259,7 +300,7 @@ def _collect_sources(context: Path, dockerfile_path: Path) -> list[Path]:
                     rel = fp.resolve().relative_to(context.resolve()).as_posix()
                 except Exception:
                     continue
-                if _is_ignored_by_dockerignore(dockerignore_rules, rel_posix=rel, is_dir=fp.is_dir()):
+                if _is_ignored(dockerignore_rules, rel_posix=rel, is_dir=fp.is_dir()):
                     continue
                 paths.append(fp)
 

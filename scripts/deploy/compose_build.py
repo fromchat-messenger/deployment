@@ -1,4 +1,4 @@
-"""Parse docker-compose JSON and run image builds for selected components."""
+"""Compose generation and docker compose build for deploy."""
 
 from __future__ import annotations
 
@@ -6,7 +6,6 @@ import json
 import os
 import subprocess
 import sys
-from dataclasses import dataclass
 from pathlib import Path
 
 from deploy.paths import ProjectPaths
@@ -14,30 +13,23 @@ import deploy.ui as ui
 from deploy.util import (
     compute_inputs_hash,
     dedupe_preserve,
+    image_exists_locally,
     local_docker_image_tags,
     local_image_layer_fp,
-    read_file_if_exists,
-    sanitize_ref,
+    read_cached_input_hash,
+    write_image_cache_fields,
 )
 
 FROMCHAT_IMAGE_SERVICES = frozenset(
     {"main", "messaging", "file_storage", "postgres", "web", "caddy", "updater"}
 )
 FROMCHAT_PREFIX = "fromchat/"
-
-
-@dataclass
-class PushableService:
-    service: str
-    image_tag: str
-    dockerfile: Path
-    build_context: Path
-    build_target: str
-    input_hash: str
-    compose_root: Path
+BUILD_COMPOSE_FILE = "compose.build.yml"
 
 
 def fromchat_image(service: str, tag: str) -> str:
+    if service == "updater":
+        return f"{FROMCHAT_PREFIX}{service}:latest"
     return f"{FROMCHAT_PREFIX}{service}:{tag}"
 
 
@@ -55,11 +47,16 @@ class ComposeBuildPhase:
         self._platform = platform
         self._use_docker_build = use_docker_build
 
-    def load_compose_json(self, compose_root: Path) -> dict:
+    def load_compose_json(self, compose_root: Path, compose_file: str = "compose.yml") -> dict:
         env = os.environ.copy()
         env["COMPOSE_PROFILES"] = "production"
+        cmd = ["docker", "compose", "-f", compose_file]
+        env_file = compose_root / ".env"
+        if env_file.is_file():
+            cmd.extend(["--env-file", str(env_file)])
+        cmd.extend(["config", "--format", "json"])
         p = subprocess.run(
-            ["docker", "compose", "-f", "compose.yml", "config", "--format", "json"],
+            cmd,
             cwd=compose_root,
             capture_output=True,
             text=True,
@@ -72,199 +69,143 @@ class ComposeBuildPhase:
             sys.exit(1)
         return json.loads(p.stdout)
 
-    def list_services(self, compose_root: Path) -> list[str]:
-        env = os.environ.copy()
-        env["COMPOSE_PROFILES"] = "production"
-        p = subprocess.run(
-            ["docker", "compose", "-f", "compose.yml", "config", "--services"],
-            cwd=compose_root,
-            capture_output=True,
-            text=True,
-            env=env,
-        )
-        if p.returncode != 0:
-            return []
-        return [s.strip() for s in p.stdout.splitlines() if s.strip()]
+    def list_build_services(self, build_dir: Path) -> list[str]:
+        compose = self.load_compose_json(build_dir, BUILD_COMPOSE_FILE)
+        services = compose.get("services") or {}
+        out: list[str] = []
+        for name, spec in services.items():
+            if name not in FROMCHAT_IMAGE_SERVICES:
+                continue
+            if not isinstance(spec, dict):
+                continue
+            if isinstance(spec.get("build"), dict):
+                out.append(name)
+        return out
 
-    def _make_pushable(
-        self,
-        *,
-        service: str,
-        image_tag: str,
-        dockerfile: Path,
-        build_context: Path,
-        build_target: str,
-        compose_root: Path,
-    ) -> PushableService | None:
-        if not dockerfile.is_file():
-            ui.error(f"Could not find Dockerfile for {service} at {dockerfile}")
-            sys.exit(1)
-        if not self._paths.input_hash_script.is_file():
-            ui.error(f"Missing {self._paths.input_hash_script}")
-            sys.exit(1)
-        h = compute_inputs_hash(
-            build_context,
+    def _service_build_paths(self, spec: dict) -> tuple[Path, Path] | None:
+        build = spec.get("build")
+        if not isinstance(build, dict):
+            return None
+        context = Path(str(build.get("context") or ".")).resolve()
+        dockerfile = Path(str(build.get("dockerfile") or "Dockerfile"))
+        if not dockerfile.is_absolute():
+            dockerfile = context / dockerfile
+        return context, dockerfile
+
+    def _service_build_identity(self, spec: dict) -> str:
+        build = spec.get("build")
+        if not isinstance(build, dict):
+            return ""
+        parts: list[str] = []
+        target = build.get("target")
+        if target:
+            parts.append(f"target={target}")
+        args = build.get("args")
+        if isinstance(args, dict):
+            for key in sorted(args.keys()):
+                parts.append(f"arg:{key}={args[key]}")
+        elif isinstance(args, list):
+            for item in sorted(str(x) for x in args):
+                parts.append(f"arg:{item}")
+        return "\n".join(parts)
+
+    def _service_input_hash(self, context: Path, dockerfile: Path, spec: dict) -> str:
+        return compute_inputs_hash(
+            context,
             dockerfile,
             hash_script=self._paths.input_hash_script,
-        )
-        if not h:
-            ui.error(f"Failed to compute input hash for {service}")
-            sys.exit(1)
-        return PushableService(
-            service=service,
-            image_tag=image_tag,
-            dockerfile=dockerfile,
-            build_context=build_context,
-            build_target=build_target,
-            input_hash=h,
-            compose_root=compose_root,
+            extra_material=self._service_build_identity(spec),
         )
 
-    def collect_pushable(
+    def _partition_build_services(
         self,
-        compose: dict,
+        build_dir: Path,
         services: list[str],
-        compose_root: Path,
-    ) -> list[PushableService]:
-        out: list[PushableService] = []
+    ) -> tuple[list[str], list[str]]:
+        compose = self.load_compose_json(build_dir, BUILD_COMPOSE_FILE)
         svc_map = compose.get("services") or {}
+        cache_root = self._paths.local_image_cache_dir
+        need: list[str] = []
+        skip: list[str] = []
         for service in services:
-            if service not in FROMCHAT_IMAGE_SERVICES:
+            spec = svc_map.get(service)
+            if not isinstance(spec, dict):
+                need.append(service)
                 continue
+            paths = self._service_build_paths(spec)
+            if not paths:
+                need.append(service)
+                continue
+            context, dockerfile = paths
+            image_tag = fromchat_image(service, self._tag)
+            input_hash = self._service_input_hash(context, dockerfile, spec)
+            cached = read_cached_input_hash(cache_root, image_tag)
+            if (
+                input_hash
+                and cached == input_hash
+                and image_exists_locally(image_tag)
+            ):
+                skip.append(service)
+            else:
+                need.append(service)
+        return need, skip
+
+    def _update_service_cache(self, spec: dict, service: str) -> None:
+        paths = self._service_build_paths(spec)
+        if not paths:
+            return
+        context, dockerfile = paths
+        image_tag = fromchat_image(service, self._tag)
+        input_hash = self._service_input_hash(context, dockerfile, spec)
+        if not input_hash:
+            return
+        fields: dict[str, str] = {"input.sha256": input_hash}
+        layer_fp = local_image_layer_fp(image_tag)
+        if layer_fp:
+            fields["local.layer.sha256"] = layer_fp
+        write_image_cache_fields(self._paths.local_image_cache_dir, image_tag, **fields)
+
+    def run_compose_build(
+        self,
+        build_dir: Path,
+        services: list[str],
+        *,
+        env_file: Path | None = None,
+    ) -> list[str]:
+        if not services:
+            ui.success("Build skipped (no services to build)")
+            return []
+
+        need_build, _skip_build = self._partition_build_services(build_dir, services)
+
+        if need_build:
+            ui.step(f"Building {len(need_build)} image(s) via docker compose")
+            ui.substep(", ".join(need_build))
+            cmd = ["docker", "compose", "-f", BUILD_COMPOSE_FILE]
+            resolved_env = env_file if env_file and env_file.is_file() else build_dir / ".env"
+            if resolved_env.is_file():
+                cmd.extend(["--env-file", str(resolved_env)])
+            cmd.extend(["build", "--pull", *need_build])
+            env = os.environ.copy()
+            if not self._use_docker_build:
+                env["DOCKER_DEFAULT_PLATFORM"] = self._platform
+            if subprocess.run(cmd, cwd=build_dir, env=env).returncode != 0:
+                ui.error("docker compose build failed")
+                sys.exit(1)
+            ui.success(f"Build complete! {len(need_build)} image(s) built")
+
+        compose = self.load_compose_json(build_dir, BUILD_COMPOSE_FILE)
+        svc_map = compose.get("services") or {}
+        built: list[str] = []
+        for service in services:
             spec = svc_map.get(service)
             if not isinstance(spec, dict):
                 continue
-            build = spec.get("build")
-            if not isinstance(build, dict):
+            if not self._service_build_paths(spec):
                 continue
-            image_tag = fromchat_image(service, self._tag)
-            dockerfile_rel = (build.get("dockerfile") or "").strip()
-            context_rel = (build.get("context") or ".").strip()
-            build_target = (build.get("target") or "").strip()
-            if context_rel in (".", "./", ""):
-                build_context = compose_root
-            elif context_rel == "..":
-                build_context = compose_root.parent
-            elif context_rel.startswith("/"):
-                build_context = Path(context_rel)
-            else:
-                build_context = (compose_root / context_rel).resolve()
-            if dockerfile_rel:
-                if dockerfile_rel.startswith("/"):
-                    dockerfile = Path(dockerfile_rel)
-                elif (compose_root / dockerfile_rel).is_file():
-                    dockerfile = compose_root / dockerfile_rel
-                else:
-                    dockerfile = build_context / dockerfile_rel
-            else:
-                dockerfile = build_context / "Dockerfile"
-            ps = self._make_pushable(
-                service=service,
-                image_tag=image_tag,
-                dockerfile=dockerfile,
-                build_context=build_context,
-                build_target=build_target,
-                compose_root=compose_root,
-            )
-            if ps:
-                out.append(ps)
-        return out
+            self._update_service_cache(spec, service)
+            built.append(fromchat_image(service, self._tag))
 
-    def collect_caddy_pushable(self) -> PushableService | None:
-        caddy_dir = self._paths.caddy_build_dir
-        if not caddy_dir:
-            ui.error(
-                "Caddy selected but backend/src/caddy not found. "
-                "Set FROMCHAT_BACKEND_DIR to a backend checkout."
-            )
-            sys.exit(1)
-        return self._make_pushable(
-            service="caddy",
-            image_tag=fromchat_image("caddy", self._tag),
-            dockerfile=caddy_dir / "Dockerfile",
-            build_context=caddy_dir,
-            build_target="",
-            compose_root=caddy_dir,
-        )
-
-    def collect_updater_pushable(self) -> PushableService | None:
-        updater_dir = self._paths.updater_dir
-        if not updater_dir:
-            ui.error(
-                "Updater selected but ../updater not found. Set FROMCHAT_UPDATER_DIR."
-            )
-            sys.exit(1)
-        dockerfile = updater_dir / "Dockerfile"
-        return self._make_pushable(
-            service="updater",
-            image_tag=fromchat_image("updater", "latest"),
-            dockerfile=dockerfile,
-            build_context=updater_dir,
-            build_target="",
-            compose_root=updater_dir,
-        )
-
-    def plan_builds(self, pushable: list[PushableService]) -> list[PushableService]:
-        cache_root = self._paths.local_image_cache_dir
-        cache_root.mkdir(parents=True, exist_ok=True)
-        to_build: list[PushableService] = []
-        for ps in pushable:
-            key = sanitize_ref(ps.image_tag)
-            cache_file = cache_root / key / "input.sha256"
-            prev = read_file_if_exists(cache_file).strip()
-            fp = local_image_layer_fp(ps.image_tag)
-            if prev and prev == ps.input_hash and fp:
-                continue
-            to_build.append(ps)
-        return to_build
-
-    def run_builds(self, to_build: list[PushableService]) -> list[str]:
-        if not to_build:
-            ui.success("Build skipped (no Docker inputs changed)")
-            return []
-        ui.step(f"Building {len(to_build)} image(s) locally")
-        for ps in to_build:
-            ui.substep(f"Building {ps.service} -> {ps.image_tag}...")
-            if self._use_docker_build:
-                args = [
-                    "docker",
-                    "build",
-                    "--pull",
-                    "--file",
-                    str(ps.dockerfile),
-                    "--tag",
-                    ps.image_tag,
-                ]
-            else:
-                args = [
-                    "docker",
-                    "buildx",
-                    "build",
-                    "--pull",
-                    "--platform",
-                    self._platform,
-                    "--file",
-                    str(ps.dockerfile),
-                    "--tag",
-                    ps.image_tag,
-                    "--output=type=docker",
-                    "--provenance=false",
-                    "--sbom=false",
-                ]
-            if ps.build_target:
-                args.extend(["--target", ps.build_target])
-            args.append(str(ps.build_context))
-            if subprocess.run(args, cwd=ps.compose_root).returncode != 0:
-                ui.error(f"Build failed for {ps.service}")
-                sys.exit(1)
-        built: list[str] = []
-        for ps in to_build:
-            key = sanitize_ref(ps.image_tag)
-            d = self._paths.local_image_cache_dir / key
-            d.mkdir(parents=True, exist_ok=True)
-            (d / "input.sha256").write_text(ps.input_hash, encoding="utf-8")
-            built.append(ps.image_tag)
-        ui.success(f"Build complete! {len(built)} image(s) built")
         return built
 
 
@@ -290,10 +231,6 @@ def classify_compose_images(
     return dedupe_preserve(fromchat_images), dedupe_preserve(third_party)
 
 
-def images_present_locally(images: list[str], local_tags: set[str]) -> list[str]:
-    return dedupe_preserve([img for img in images if img in local_tags])
-
-
 def verify_fromchat_images_local(fromchat_images: list[str], local_tags: set[str], ui_mod: object) -> None:
     missing = [img for img in fromchat_images if img not in local_tags]
     if missing:
@@ -312,14 +249,15 @@ def pull_third_party_images(images: list[str], *, platform: str | None = None) -
     docker_local.pull_images(images, platform=platform)
 
 
-def generate_production_compose(
+def _generate_compose(
     paths: ProjectPaths,
     *,
     components: list[str],
     tag: str,
     output: Path,
+    keep_build: bool,
+    include_updater: bool,
 ) -> None:
-    ui.step("Generating production compose.yml")
     cmd = [
         sys.executable,
         str(paths.generate_compose_script),
@@ -330,12 +268,56 @@ def generate_production_compose(
         "--output",
         str(output),
     ]
+    if keep_build:
+        cmd.append("--keep-build")
     if "backend" in components and paths.backend_dir:
         cmd.extend(["--backend-compose", str(paths.backend_dir / "compose.yml")])
+        cmd.extend(["--backend-root", str(paths.backend_dir)])
     if "frontend" in components and paths.web_dir:
         cmd.extend(["--frontend-compose", str(paths.web_dir / "compose.yml")])
-    if "caddy" in components:
-        cmd.extend(["--caddy-compose", str(paths.caddy_compose)])
+        cmd.extend(["--web-root", str(paths.web_dir)])
+    if include_updater:
+        cmd.append("--include-updater")
+        if paths.updater_dir:
+            cmd.extend(["--updater-root", str(paths.updater_dir)])
     if subprocess.run(cmd).returncode != 0:
         ui.error("generate-compose.py failed")
         sys.exit(1)
+
+
+def generate_build_compose(
+    paths: ProjectPaths,
+    *,
+    components: list[str],
+    tag: str,
+    output: Path,
+    include_updater: bool,
+) -> None:
+    ui.step("Generating build compose")
+    _generate_compose(
+        paths,
+        components=components,
+        tag=tag,
+        output=output,
+        keep_build=True,
+        include_updater=include_updater,
+    )
+
+
+def generate_production_compose(
+    paths: ProjectPaths,
+    *,
+    components: list[str],
+    tag: str,
+    output: Path,
+    include_updater: bool = False,
+) -> None:
+    ui.step("Generating production compose.yml")
+    _generate_compose(
+        paths,
+        components=components,
+        tag=tag,
+        output=output,
+        keep_build=False,
+        include_updater=include_updater,
+    )

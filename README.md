@@ -19,9 +19,10 @@ The installer:
 7. Resolves the latest common semver tag (`v1.0`, `v1.0.0`, …)
 8. Downloads only `compose.yml` from each repo at that tag
 9. Merges compose files and replaces `build:` with `image: fromchat/<service>:<tag>`
-10. Opens `Caddyfile` in nano when caddy is selected
-11. Runs `docker compose up -d --wait`
-12. Optionally starts the [updater](../updater) service
+   (caddy comes from backend compose; if not selected it is commented out)
+10. Copies backend `src/livekit/compose.yaml` into the install dir
+11. Runs `docker compose up -d`
+12. Writes `updater/.env` when updater is selected (updater runs in the main stack)
 
 ## Classic deploy (offline, build on your PC)
 
@@ -54,7 +55,7 @@ This:
 The server never pulls from a registry during deploy. Your PC needs network access to pull base images (LiveKit, Docker `FROM` layers, unregistry for pussh).
 
 Override source trees with `FROMCHAT_BACKEND_DIR`, `FROMCHAT_WEB_DIR`, `FROMCHAT_UPDATER_DIR`.  
-`DEPLOYMENT_SERVER` in the backend (or deployment) `.env` still works.
+`DEPLOYMENT_SERVER` and all server secrets live in **`deployment/.env.prod`** (copied to the server as `.env`).
 
 The old entry point `backend/scripts/deploy.sh` redirects here.
 
@@ -72,14 +73,12 @@ The old entry point `backend/scripts/deploy.sh` redirects here.
 
 ```
 ~/fromchat-server/
-  compose.yml          # merged production stack
-  .fromchat-version    # current release tag
-  .env                 # secrets (create via backend generate:env)
-  Caddyfile            # when caddy selected
-  config/livekit.yaml
-  updater/             # when updater selected
-    compose.yml
-    .env
+  compose.yml                 # merged production stack (from backend ± web)
+  .fromchat-version           # current release tag
+  .env                        # copied from deployment/.env.prod
+  src/livekit/compose.yaml    # from backend (LiveKit config)
+  fromchat.service            # systemd unit (classic deploy)
+  updater/.env                # when updater selected
 ```
 
 ## GitHub token (updater)

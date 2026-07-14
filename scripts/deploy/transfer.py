@@ -2,16 +2,27 @@
 
 from __future__ import annotations
 
+import os
 import shlex
 import subprocess
 import sys
+import urllib.request
 from pathlib import Path
 
 from deploy.paths import ProjectPaths
 from deploy.ssh_auth import SshCredentials, scp_argv, ssh_argv, ssh_common_options
+from deploy.util import (
+    image_exists_locally,
+    local_image_layer_fp,
+    remote_image_layer_fp,
+    write_image_cache_fields,
+)
 import deploy.ui as ui
 
 UNREGISTRY_IMAGE = "ghcr.io/psviderski/unregistry"
+PUSSH_PLUGIN_URL = (
+    "https://raw.githubusercontent.com/psviderski/unregistry/main/docker-pussh"
+)
 
 REMOTE_SYSTEMD_SCRIPT = r"""set -e
 
@@ -32,11 +43,22 @@ if [ -z "$REMOTE_DEPLOY_PATH" ]; then
     exit 1
 fi
 
-mkdir -p "$REMOTE_DEPLOY_PATH/config" "$REMOTE_DEPLOY_PATH/data/prod"
+mkdir -p "$REMOTE_DEPLOY_PATH/config" \
+    "$REMOTE_DEPLOY_PATH/data/prod/files" \
+    "$REMOTE_DEPLOY_PATH/data/prod/logs/messaging" \
+    "$REMOTE_DEPLOY_PATH/data/prod/logs/file_storage" \
+    "$REMOTE_DEPLOY_PATH/data/prod/postgres"
 cd "$REMOTE_DEPLOY_PATH"
 
+# Match container UIDs (app=1000, messaging=1001, filestorage=1002).
+# Do not touch postgres data dir ownership.
+sudo_cmd chown -R 1000:1000 data/prod/logs 2>/dev/null || true
+sudo_cmd chown -R 1001:1001 data/prod/logs/messaging 2>/dev/null || true
+sudo_cmd chown -R 1002:1002 data/prod/files data/prod/logs/file_storage 2>/dev/null || true
+
 if [ ! -f "$REMOTE_DEPLOY_PATH/.env" ]; then
-    echo "⚠️  Warning: .env file not found"
+    echo "❌ .env file not found at $REMOTE_DEPLOY_PATH/.env"
+    exit 1
 fi
 
 UNIT_SRC="$REMOTE_DEPLOY_PATH/fromchat.service"
@@ -68,18 +90,80 @@ class DeployTransfer:
     def __init__(self, paths: ProjectPaths) -> None:
         self._paths = paths
 
+    @staticmethod
+    def _pussh_works() -> bool:
+        plugin = DeployTransfer._plugin_dir() / "docker-pussh"
+        if not (plugin.is_file() or plugin.is_symlink()):
+            return False
+        r = subprocess.run(
+            ["docker", "pussh"],
+            capture_output=True,
+            text=True,
+        )
+        out = f"{r.stdout or ''}{r.stderr or ''}"
+        return "IMAGE and HOST are required" in out or "Upload a Docker image" in out
+
+    @staticmethod
+    def _plugin_dir() -> Path:
+        return Path.home() / ".docker" / "cli-plugins"
+
+    def _install_pussh_plugin(self) -> bool:
+        plugin_dir = self._plugin_dir()
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        dest = plugin_dir / "docker-pussh"
+
+        # Prefer Homebrew install when present.
+        brew_prefix = subprocess.run(
+            ["brew", "--prefix"],
+            capture_output=True,
+            text=True,
+        )
+        candidates: list[Path] = []
+        if brew_prefix.returncode == 0 and brew_prefix.stdout.strip():
+            candidates.append(Path(brew_prefix.stdout.strip()) / "bin" / "docker-pussh")
+        for p in ("/opt/homebrew/bin/docker-pussh", "/usr/local/bin/docker-pussh"):
+            candidates.append(Path(p))
+
+        for cand in candidates:
+            if cand.is_file():
+                ui.substep(f"Linking docker-pussh from {cand}…")
+                if dest.is_symlink() or dest.exists():
+                    dest.unlink()
+                dest.symlink_to(cand)
+                os.chmod(cand, 0o755)
+                return self._pussh_works()
+
+        ui.substep("Downloading docker-pussh plugin…")
+        try:
+            with urllib.request.urlopen(PUSSH_PLUGIN_URL, timeout=60) as resp:
+                dest.write_bytes(resp.read())
+            dest.chmod(0o755)
+        except OSError as exc:
+            ui.error(f"Failed to download docker-pussh: {exc}")
+            return False
+        return self._pussh_works()
+
     def ensure_pussh(self) -> None:
-        if subprocess.run(["docker", "pussh", "--help"], capture_output=True).returncode != 0:
-            ui.error("docker pussh plugin not installed")
-            print("   Install: npm run install:pussh (from the backend repo)")
+        if self._pussh_works():
+            return
+        ui.warning("docker pussh plugin not found — installing…")
+        if not self._install_pussh_plugin():
+            ui.error("docker pussh plugin is required for image transfer")
+            print("   Install manually:")
+            print("     brew install psviderski/tap/docker-pussh")
+            print("     mkdir -p ~/.docker/cli-plugins")
+            print(
+                "     ln -sf \"$(brew --prefix)/bin/docker-pussh\" "
+                "~/.docker/cli-plugins/docker-pussh"
+            )
+            raise SystemExit(1)
+        ui.success("docker pussh ready")
 
     def ensure_unregistry(self, creds: SshCredentials) -> None:
         """Server needs unregistry for pussh; pull locally then transfer if missing."""
-        from deploy.util import image_exists_locally
-
         check = (
             "sudo docker images --format '{{.Repository}}:{{.Tag}}' | "
-            f"grep -q '^{UNREGISTRY_IMAGE}$'"
+            f"grep -qE '^{UNREGISTRY_IMAGE}(:|$)'"
         )
         if subprocess.run(ssh_argv(creds.server, check), capture_output=True).returncode == 0:
             return
@@ -92,17 +176,56 @@ class DeployTransfer:
             ui.error("Failed to transfer unregistry image to server")
             raise SystemExit(1)
 
-    def pussh_images(self, creds: SshCredentials, images: list[str]) -> None:
-        ui.step("Transferring images to server")
-        if not images:
-            ui.success("No images to transfer")
-            return
-        self.ensure_unregistry(creds)
+    def _images_needing_transfer(
+        self,
+        creds: SshCredentials,
+        images: list[str],
+    ) -> tuple[list[str], list[str]]:
+        need: list[str] = []
+        skip: list[str] = []
         for image in images:
+            local_fp = local_image_layer_fp(image)
+            if not local_fp:
+                need.append(image)
+                continue
+            remote_fp = remote_image_layer_fp(creds.server, image)
+            if remote_fp and remote_fp == local_fp:
+                skip.append(image)
+                write_image_cache_fields(
+                    self._paths.local_image_cache_dir,
+                    image,
+                    **{
+                        "local.layer.sha256": local_fp,
+                        "remote.layer.sha256": remote_fp,
+                    },
+                )
+            else:
+                need.append(image)
+        return need, skip
+
+    def pussh_images(self, creds: SshCredentials, images: list[str]) -> None:
+        if not images:
+            return
+        need, _skip = self._images_needing_transfer(creds, images)
+        if not need:
+            return
+        ui.step("Transferring images to server")
+        self.ensure_unregistry(creds)
+        for image in need:
             ui.substep(f"Transferring {image}...")
             if subprocess.run(["docker", "pussh", image, creds.server]).returncode != 0:
                 ui.error(f"Failed to transfer {image}")
                 raise SystemExit(1)
+            layer_fp = local_image_layer_fp(image)
+            if layer_fp:
+                write_image_cache_fields(
+                    self._paths.local_image_cache_dir,
+                    image,
+                    **{
+                        "local.layer.sha256": layer_fp,
+                        "remote.layer.sha256": layer_fp,
+                    },
+                )
             print()
 
     def pull_external_on_server(self, creds: SshCredentials, images: list[str]) -> None:
@@ -163,40 +286,42 @@ echo {pw} | sudo -S -p '' chown -R $(whoami):$(whoami) {d_root} 2>/dev/null || t
                 print(f"    {line}")
             raise SystemExit(1)
 
-    def copy_env_prod(self, creds: SshCredentials, deploy_path: str) -> None:
-        candidates = []
-        if self._paths.backend_dir:
-            candidates.append(self._paths.backend_dir / ".env.prod")
-        candidates.append(self._paths.deployment_root / ".env.prod")
-        prod = next((p for p in candidates if p.is_file()), None)
-        if prod:
-            ui.substep("Copying .env.prod to .env...")
-            if (
-                subprocess.run(
-                    scp_argv(str(prod), f"{creds.server}:{deploy_path}/.env"),
-                    capture_output=True,
-                ).returncode
-                != 0
-            ):
-                ui.warning("Failed to copy .env.prod to .env")
-        else:
-            ui.warning(".env.prod not found (looked in backend and deployment roots)")
+    def copy_env_to_server(self, creds: SshCredentials, deploy_path: str) -> None:
+        env_src = self._paths.deploy_env_source()
+        if not env_src:
+            ui.error(
+                "Missing deployment/.env.prod for deploy. "
+                "Create it (e.g. npm run generate:env from backend, output ../deployment/.env.prod) before deploying."
+            )
+            raise SystemExit(1)
+        ui.substep(f"Copying {env_src.name} to server .env...")
+        if (
+            subprocess.run(
+                scp_argv(str(env_src), f"{creds.server}:{deploy_path}/.env"),
+                capture_output=True,
+            ).returncode
+            != 0
+        ):
+            ui.error("Failed to copy .env to server")
+            raise SystemExit(1)
 
     def resolve_deploy_path_on_server(self, server: str, deploy_path: str) -> str:
+        quoted = shlex.quote(deploy_path)
         r = subprocess.run(
-            [
-                "ssh",
-                "-o",
-                "BatchMode=yes",
-                *ssh_common_options(),
-                server,
-                f"eval echo {deploy_path}",
-            ],
+            ssh_argv(server, f"bash -lc 'eval echo {quoted}'"),
             capture_output=True,
             text=True,
         )
-        out = r.stdout.strip()
-        return out if out else deploy_path
+        out = (r.stdout or "").strip()
+        if r.returncode != 0 or not out:
+            ui.error(f"Could not resolve deploy path on server: {deploy_path}")
+            if r.stderr:
+                print(r.stderr, file=sys.stderr)
+            raise SystemExit(1)
+        if "~" in out:
+            ui.error(f"Deploy path did not expand on server: {out}")
+            raise SystemExit(1)
+        return out
 
     def firebase_cert_path(self) -> Path:
         if self._paths.backend_dir:

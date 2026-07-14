@@ -86,44 +86,36 @@ real_install_dir() {
 
 configure_caddyfile() {
   local install_dir="$1"
-  local caddyfile="${install_dir}/Caddyfile"
-  if [[ ! -f "${caddyfile}" ]]; then
-    cp "${DEPLOYMENT_ROOT}/templates/Caddyfile" "${caddyfile}"
-  fi
-  step "Opening Caddyfile in nano (save with Ctrl+O, exit with Ctrl+X)…"
-  "${EDITOR:-nano}" "${caddyfile}" || nano "${caddyfile}" || vi "${caddyfile}"
+  warn "Caddyfile is built into the fromchat/caddy image (backend/src/caddy/Caddyfile)."
+  warn "Edit it in the backend repo and redeploy to change reverse-proxy config."
 }
 
-setup_updater() {
+write_updater_env() {
   local install_dir="$1"
   local tag="$2"
   local updater_dir="${install_dir}/updater"
   mkdir -p "${updater_dir}"
 
-  step "Git token for the auto-updater (GitHub or Gitea: read packages + repo metadata)."
-  info "GitHub token:"
-  printf '%b%s%b\n' "$BLUE" \
-    "  https://github.com/settings/tokens/new?description=FromChat%20Updater&scopes=read:packages,repo" \
-    "$NC"
-  info "Gitea token: Settings → Applications → Generate New Token (read:repository, read:package)"
-  prompt "Paste token (input hidden):"
-  local token
-  IFS= read -rs token || true
-  printf '\n' >&2
-  [[ -n "${token}" ]] || die "GitHub token is required when updater is selected."
-
-  fetch_raw_file "${DEFAULT_APP_REPO}" "${tag}" "updater/compose.yml" \
-    "${updater_dir}/compose.yml" 2>/dev/null \
-    || fetch_raw_file "${DEFAULT_APP_REPO}" "main" "updater/compose.yml" \
-      "${updater_dir}/compose.yml" 2>/dev/null \
-    || cp "${DEPLOYMENT_ROOT}/../updater/compose.yml" "${updater_dir}/compose.yml"
+  local token="${GITHUB_TOKEN:-${GIT_TOKEN:-}}"
+  if [[ -z "${token}" ]]; then
+    step "Git token for the auto-updater (GitHub or Gitea: read packages + repo metadata)."
+    info "GitHub token:"
+    printf '%b%s%b\n' "$BLUE" \
+      "  https://github.com/settings/tokens/new?description=FromChat%20Updater&scopes=read:packages,repo" \
+      "$NC"
+    info "Gitea token: Settings → Applications → Generate New Token (read:repository, read:package)"
+    prompt "Paste token (input hidden):"
+    IFS= read -rs token || true
+    printf '\n' >&2
+    [[ -n "${token}" ]] || die "GitHub token is required when updater is selected."
+    export GITHUB_TOKEN="${token}"
+    export GIT_TOKEN="${token}"
+  fi
 
   local components_csv
   components_csv="$(IFS=,; echo "${SELECTED[*]}")"
 
   cat > "${updater_dir}/.env" <<EOF
-GITHUB_TOKEN=${token}
-GIT_TOKEN=${token}
 BACKEND_REPO=${BACKEND_REPO}
 WEB_REPO=${WEB_REPO}
 DEPLOYMENT_REPO=${DEFAULT_APP_REPO}
@@ -131,12 +123,12 @@ COMPOSE_PROJECT_DIR=${install_dir}
 FROMCHAT_COMPONENTS=${components_csv}
 CHECK_INTERVAL_SECONDS=60
 EOF
-
-  (
-    cd "${updater_dir}"
-    docker compose --env-file .env up -d --wait --timeout 120
-  )
-  success "Updater service started"
+  if [[ -n "${token}" ]]; then
+    {
+      echo "UPDATER_TOKEN=${token}"
+    } >> "${install_dir}/.env"
+  fi
+  success "Updater env written"
 }
 
 generate_config_mode() {
@@ -207,36 +199,29 @@ full_install() {
 
   local components_csv
   components_csv="$(IFS=,; echo "${SELECTED[*]}")"
-  local compose_components=""
-  local c
-  for c in "${SELECTED[@]}"; do
-    [[ "${c}" == "updater" ]] && continue
-    compose_components="${compose_components:+$compose_components,}${c}"
-  done
-
-  run_generate_compose "${INSTALL_DIR}" "${compose_components}" "${FROMCHAT_VERSION}"
+  run_generate_compose "${INSTALL_DIR}" "${components_csv}" "${FROMCHAT_VERSION}"
 
   if component_selected caddy; then
     configure_caddyfile "${INSTALL_DIR}"
   fi
 
   if [[ ! -f "${INSTALL_DIR}/.env" ]]; then
-    warn "No .env in ${INSTALL_DIR}. Create one before production use (see backend generate:env)."
+    warn "No .env in ${INSTALL_DIR}. Create deployment/.env.prod locally and redeploy, or copy it to ${INSTALL_DIR}/.env before production use."
     touch "${INSTALL_DIR}/.env"
     chown "${real_user}:${real_user}" "${INSTALL_DIR}/.env" 2>/dev/null || true
+  fi
+
+  if component_selected updater; then
+    export GITHUB_TOKEN="${gh_token:-${GITHUB_TOKEN:-}}"
+    export GIT_TOKEN="${gh_token:-${GIT_TOKEN:-${GITHUB_TOKEN:-}}}"
+    write_updater_env "${INSTALL_DIR}" "${FROMCHAT_VERSION}"
   fi
 
   step "Starting FromChat stack…"
   (
     cd "${INSTALL_DIR}"
-    docker compose --env-file .env up -d --wait --timeout 600
+    docker compose --env-file .env up -d --remove-orphans
   )
-
-  if component_selected updater; then
-    export GITHUB_TOKEN="${gh_token:-${GITHUB_TOKEN:-}}"
-    export GIT_TOKEN="${gh_token:-${GIT_TOKEN:-${GITHUB_TOKEN:-}}}"
-    setup_updater "${INSTALL_DIR}" "${FROMCHAT_VERSION}"
-  fi
 
   chown -R "${real_user}:${real_user}" "${INSTALL_DIR}" 2>/dev/null || true
   print_success_banner "${INSTALL_DIR}"

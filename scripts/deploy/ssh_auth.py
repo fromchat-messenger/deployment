@@ -225,7 +225,6 @@ class SshAuth:
             raise SystemExit(1)
 
         if self._test_key_auth():
-            ui.success("SSH key authentication works")
             return
 
         ui.warning(f"SSH key authentication failed for {self._server}")

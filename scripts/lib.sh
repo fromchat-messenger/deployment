@@ -122,38 +122,32 @@ get_latest_semver_tag() {
 }
 
 select_components() {
-  if command -v whiptail >/dev/null 2>&1; then
-    local result
-    result="$(whiptail --title "FromChat components" --checklist \
-      "Select components (Space toggles, Enter confirms)" 18 72 4 \
-      backend "Backend (API, DB, LiveKit)" ON \
-      frontend "Web frontend" ON \
-      caddy "Caddy reverse proxy (TLS)" OFF \
-      updater "Auto-update service" OFF \
-      3>&1 1>&2 2>&3)" || die "Component selection cancelled."
-    SELECTED=()
-    local item
-    for item in ${result}; do
-      SELECTED+=("${item//\"/}")
-    done
-    ((${#SELECTED[@]} > 0)) || die "Select at least one component."
-    return 0
-  fi
-
-  warn "whiptail not found; using text menu."
   local -a options=(backend frontend caddy updater)
   local -a labels=(
     "Backend (API, DB, LiveKit)"
     "Web frontend"
-    "Caddy reverse proxy"
+    "Caddy reverse proxy (TLS)"
     "Auto-update service"
   )
+  local -a defaults=(Y Y Y Y)
   SELECTED=()
-  local i choice
+  local i choice hint
+  step "Select components"
   for i in "${!options[@]}"; do
-    prompt "Include ${labels[$i]}? [y/N]:"
+    if [[ "${defaults[$i]}" == "Y" ]]; then
+      hint="Y/n"
+    else
+      hint="y/N"
+    fi
+    prompt "Include ${labels[$i]}? [${hint}]:"
     IFS= read -r choice || true
-    if [[ "${choice:-}" =~ ^[Yy] ]]; then
+    choice="${choice#"${choice%%[![:space:]]*}"}"
+    choice="${choice%"${choice##*[![:space:]]}"}"
+    if [[ -z "${choice}" ]]; then
+      [[ "${defaults[$i]}" == "Y" ]] && SELECTED+=("${options[$i]}")
+      continue
+    fi
+    if [[ "${choice}" =~ ^[Yy] ]]; then
       SELECTED+=("${options[$i]}")
     fi
   done
@@ -189,7 +183,7 @@ print_success_banner() {
   info "Manage stack:      cd ${dir} && docker compose ps"
   info "View logs:         cd ${dir} && docker compose logs -f"
   if component_selected caddy; then
-    info "Caddy config:      ${dir}/Caddyfile"
+    info "Caddy: baked into fromchat/caddy image (backend/src/caddy/Caddyfile)"
   fi
 }
 
@@ -231,13 +225,40 @@ run_generate_compose() {
     fi
   fi
 
-  mkdir -p "${install_dir}/config"
-  cp -f "${DEPLOYMENT_ROOT}/config/livekit.yaml" "${install_dir}/config/livekit.yaml"
+  mkdir -p "${install_dir}/src/livekit"
+  if ${need_backend}; then
+    if [[ -n "${LOCAL_BACKEND_COMPOSE:-}" && -f "${LOCAL_BACKEND_COMPOSE}" ]]; then
+      local backend_root
+      backend_root="$(cd "$(dirname "${LOCAL_BACKEND_COMPOSE}")" && pwd)"
+      if [[ -f "${backend_root}/src/livekit/compose.yaml" ]]; then
+        cp -f "${backend_root}/src/livekit/compose.yaml" \
+          "${install_dir}/src/livekit/compose.yaml"
+      fi
+      if [[ -f "${backend_root}/src/haproxy.cfg" ]]; then
+        cp -f "${backend_root}/src/haproxy.cfg" \
+          "${install_dir}/src/haproxy.cfg"
+      fi
+    else
+      fetch_raw_file "${BACKEND_REPO}" "${tag}" "src/livekit/compose.yaml" \
+        "${install_dir}/src/livekit/compose.yaml" 2>/dev/null \
+        || fetch_raw_file "${BACKEND_REPO}" "main" "src/livekit/compose.yaml" \
+          "${install_dir}/src/livekit/compose.yaml"
+      fetch_raw_file "${BACKEND_REPO}" "${tag}" "src/haproxy.cfg" \
+        "${install_dir}/src/haproxy.cfg" 2>/dev/null \
+        || fetch_raw_file "${BACKEND_REPO}" "main" "src/haproxy.cfg" \
+          "${install_dir}/src/haproxy.cfg" 2>/dev/null \
+        || true
+    fi
+  fi
+
+  local stack_csv
+  stack_csv="$(echo "${components_csv}" | tr ',' '\n' | grep -v '^updater$' | paste -sd, - || true)"
+  [[ -n "${stack_csv}" ]] || stack_csv="backend"
 
   local -a gen_args=(
     python3 "${DEPLOYMENT_ROOT}/scripts/generate-compose.py"
     --tag "${tag}"
-    --components "${components_csv}"
+    --components "${stack_csv}"
     --output "${install_dir}/compose.yml"
   )
   if ${need_backend}; then
@@ -246,8 +267,11 @@ run_generate_compose() {
   if ${need_frontend}; then
     gen_args+=(--frontend-compose "${tmp}/frontend.compose.yml")
   fi
-  if [[ ",${components_csv}," == *,caddy,* ]]; then
-    gen_args+=(--caddy-compose "${DEPLOYMENT_ROOT}/compose/caddy.compose.yml")
+  if [[ ",${components_csv}," == *,updater,* ]]; then
+    gen_args+=(--include-updater)
+    if [[ -d "${DEPLOYMENT_ROOT}/../updater" ]]; then
+      gen_args+=(--updater-root "${DEPLOYMENT_ROOT}/../updater")
+    fi
   fi
   "${gen_args[@]}"
 

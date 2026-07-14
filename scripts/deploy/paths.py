@@ -42,11 +42,10 @@ class ProjectPaths:
     local_cache_root: Path
     local_image_cache_dir: Path
     input_hash_script: Path
-    livekit_config: Path
-    caddy_compose: Path
-    caddyfile_template: Path
     systemd_unit_template: Path
     generate_compose_script: Path
+    livekit_config_src: Path | None
+    haproxy_config_src: Path | None
 
     @classmethod
     def from_deploy_package(cls) -> ProjectPaths:
@@ -70,14 +69,21 @@ class ProjectPaths:
             str(parent / "updater"),
         )
         caddy_build = None
+        livekit_src = None
+        haproxy_src = None
         if backend:
             cand = backend / "src" / "caddy"
             if cand.is_dir() and (cand / "Dockerfile").is_file():
                 caddy_build = cand
+            lk = backend / "src" / "livekit" / "compose.yaml"
+            if lk.is_file():
+                livekit_src = lk
+            hp = backend / "src" / "haproxy.cfg"
+            if hp.is_file():
+                haproxy_src = hp
 
-        env_file = deployment_root / ".env"
-        if backend and (backend / ".env").is_file():
-            env_file = backend / ".env"
+        # Production secrets and deploy settings: deployment/.env.prod only
+        env_file = deployment_root / ".env.prod"
 
         cache = deployment_root / ".deploy-cache"
         return cls(
@@ -92,11 +98,10 @@ class ProjectPaths:
             local_cache_root=cache,
             local_image_cache_dir=cache / "images",
             input_hash_script=scripts_dir / "docker_inputs_hash.py",
-            livekit_config=deployment_root / "config" / "livekit.yaml",
-            caddy_compose=deployment_root / "compose" / "caddy.compose.yml",
-            caddyfile_template=deployment_root / "templates" / "Caddyfile",
             systemd_unit_template=deployment_root / "templates" / "fromchat.service",
             generate_compose_script=scripts_dir / "generate-compose.py",
+            livekit_config_src=livekit_src,
+            haproxy_config_src=haproxy_src,
         )
 
     def compose_for(self, component: str) -> Path | None:
@@ -104,8 +109,6 @@ class ProjectPaths:
             return self.backend_dir / "compose.yml"
         if component == "frontend" and self.web_dir:
             return self.web_dir / "compose.yml"
-        if component == "caddy":
-            return self.caddy_compose if self.caddy_compose.is_file() else None
         return None
 
     def project_root_for(self, component: str) -> Path | None:
@@ -113,6 +116,8 @@ class ProjectPaths:
             return self.backend_dir
         if component == "frontend":
             return self.web_dir
-        if component == "caddy":
-            return self.caddy_build_dir
         return None
+
+    def deploy_env_source(self) -> Path | None:
+        """Production env copied to the server as .env (deployment/.env.prod only)."""
+        return self.env_file if self.env_file.is_file() else None

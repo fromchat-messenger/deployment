@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 import time
@@ -89,19 +90,24 @@ def _setup_builder() -> None:
 
 def pull_images(images: list[str], *, platform: str | None = None) -> None:
     """Pull third-party images on this machine (then transfer via pussh)."""
-    from deploy.util import dedupe_preserve
+    from deploy.util import dedupe_preserve, image_exists_locally
 
     unique = dedupe_preserve([img for img in images if img.strip()])
     if not unique:
         return
-    ui.step(f"Pulling {len(unique)} remote image(s) locally")
-    for image in unique:
+    to_pull = [img for img in unique if not image_exists_locally(img)]
+    if not to_pull:
+        return
+    ui.step(f"Pulling {len(to_pull)} remote image(s) locally")
+    for image in to_pull:
         ui.substep(f"Pulling {image}...")
         cmd = ["docker", "pull"]
         if platform:
             cmd.extend(["--platform", platform])
         cmd.append(image)
-        if subprocess.run(cmd).returncode != 0:
+        env = os.environ.copy()
+        env["DOCKER_CLI_HINTS"] = "false"
+        if subprocess.run(cmd, env=env).returncode != 0:
             ui.error(f"Failed to pull {image}")
             sys.exit(1)
     ui.success("Remote images ready locally")
