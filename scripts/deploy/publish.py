@@ -1,4 +1,4 @@
-"""Multi-arch image build + optional push to Docker Hub, GHCR, and Gitea."""
+"""Multi-arch image build + push to Docker Hub, GHCR, and Gitea."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import argparse
 import getpass
 import json
 import os
+import platform as py_platform
 import re
 import subprocess
 import sys
@@ -23,10 +24,13 @@ import deploy.ui as ui
 
 PLATFORMS = "linux/amd64,linux/arm64"
 SEMVER_TAG = re.compile(r"^v\d+\.\d+(?:\.\d+)?$")
-
+LATEST_TAG = "latest"
 GHCR_HOST = "ghcr.io"
 GITEA_HOST = "git.fromchat.ru"
 DOCKERHUB_HOST = "docker.io"
+
+# Always publish container images to GitHub Packages + Gitea unless --no-push.
+DEFAULT_PUSH_REGISTRIES = ("github", "gitea")
 
 SECRETS_DIRNAME = ".secrets"
 SECRETS_FILENAME = "registry.env"
@@ -125,7 +129,7 @@ def _parse_env_file(path: Path) -> dict[str, str]:
 
 
 def _quote_env_value(val: str) -> str:
-    if any(ch in val for ch in ' \t#"\'\\'):
+    if any(ch in val for ch in ' \t#"\'\\$`'):
         esc = val.replace("\\", "\\\\").replace('"', '\\"')
         return f'"{esc}"'
     return val
@@ -150,14 +154,25 @@ def save_secrets(paths: ProjectPaths, values: dict[str, str]) -> None:
         "",
     ]
     for key in sorted(existing):
-        lines.append(f"{key}={_quote_env_value(existing[key])}")
+        # Always quote token values — PATs can contain characters that break bare env parsing.
+        if key.endswith("_TOKEN") or key.endswith("_PASSWORD"):
+            esc = existing[key].replace("\\", "\\\\").replace('"', '\\"')
+            lines.append(f'{key}="{esc}"')
+        else:
+            lines.append(f"{key}={_quote_env_value(existing[key])}")
     path = secrets_file(paths)
-    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    tmp.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    tmp.replace(path)
     try:
         path.chmod(0o600)
     except OSError:
         pass
-    ui.substep(f"Saved credentials → {path.relative_to(paths.deployment_root)}")
+    try:
+        shown = path.relative_to(paths.deployment_root)
+    except ValueError:
+        shown = path
+    ui.substep(f"Saved credentials → {shown}")
 
 
 def load_publish_settings(paths: ProjectPaths) -> dict[str, object] | None:
@@ -456,26 +471,40 @@ def _parse_push_list(raw: str | None) -> list[str] | None:
     return out
 
 
+def _registry_labels() -> dict[str, str]:
+    return {
+        "dockerhub": "Docker Hub (fromchat/*)",
+        "github": "GitHub Packages (ghcr.io/fromchat-messenger/*)",
+        "gitea": "Gitea (git.fromchat.ru/fromchat/*)",
+    }
+
+
+def _ensure_default_push_registries(regs: list[str]) -> list[str]:
+    """GitHub + Gitea are always included when publishing (Docker Hub stays optional)."""
+    out = list(regs)
+    for name in DEFAULT_PUSH_REGISTRIES:
+        if name not in out:
+            out.append(name)
+    return out
+
+
 def _select_registries_interactive(saved: dict[str, object] | None) -> list[str]:
-    ui.step("Push destinations (optional)")
+    ui.step("Push destinations")
     ui.info(
         f"Credentials are asked here and saved under {SECRETS_DIRNAME}/{SECRETS_FILENAME} "
-        "(gitignored)."
+        "(gitignored). GitHub Packages and Gitea are always included."
     )
     saved_regs = saved.get("registries") if isinstance(saved, dict) else None
     saved_set = set(saved_regs) if isinstance(saved_regs, list) else set()
     has_saved = bool(saved_set)
 
-    selected: list[str] = []
-    labels = {
-        "dockerhub": "Docker Hub (fromchat/*)",
-        "github": "GitHub Packages (ghcr.io/fromchat-messenger/*)",
-        "gitea": "Gitea (git.fromchat.ru/fromchat/*)",
-    }
-    for name in ("dockerhub", "github", "gitea"):
-        default_on = name in saved_set if has_saved else name == "dockerhub"
-        if _confirm(f"Push to {labels[name]}?", default=default_on):
-            selected.append(name)
+    selected: list[str] = list(DEFAULT_PUSH_REGISTRIES)
+    labels = _registry_labels()
+    for name in DEFAULT_PUSH_REGISTRIES:
+        ui.substep(f"{labels[name]} — always")
+    default_hub = "dockerhub" in saved_set if has_saved else False
+    if _confirm(f"Also push to {labels['dockerhub']}?", default=default_hub):
+        selected.append("dockerhub")
     return selected
 
 
@@ -492,35 +521,50 @@ def _saved_registries(saved: dict[str, object] | None) -> list[str]:
     return out
 
 
-def _prompt_creds(registry: Registry, saved: dict[str, str]) -> Creds:
-    saved_user = (saved.get(registry.user_key) or "").strip()
-    saved_token = (saved.get(registry.token_key) or "").strip()
+def _prompt_creds(
+    registry: Registry,
+    saved: dict[str, str],
+    *,
+    force_prompt: bool = False,
+) -> Creds | None:
+    saved_user = (
+        os.environ.get(registry.user_key) or saved.get(registry.user_key) or ""
+    ).strip()
+    saved_token = (
+        os.environ.get(registry.token_key) or saved.get(registry.token_key) or ""
+    ).strip()
     default_user = saved_user or registry.default_user
 
-    if saved_user and saved_token:
+    if not force_prompt and saved_user and saved_token:
         ui.substep(f"{registry.prompt_label}: using saved credentials (user={saved_user})")
         return Creds(user=saved_user, token=saved_token)
 
     if not sys.stdin.isatty():
-        ui.error(
-            f"Missing {registry.prompt_label} credentials and no TTY to prompt. "
-            f"Run interactively or create {SECRETS_DIRNAME}/{SECRETS_FILENAME}."
+        ui.warning(
+            f"Missing {registry.prompt_label} credentials (no TTY) — skipping. "
+            f"Set them in {SECRETS_DIRNAME}/{SECRETS_FILENAME}."
         )
-        raise SystemExit(1)
+        return None
 
     ui.substep(f"{registry.prompt_label} credentials")
     user = Prompt.ask(f"  {registry.prompt_label} username", default=default_user).strip()
     if not user:
-        ui.error(f"{registry.prompt_label} username is required.")
-        raise SystemExit(1)
-    token = getpass.getpass(f"  {registry.prompt_label} token / password (hidden): ").strip()
+        ui.warning(f"{registry.prompt_label} username empty — skipping")
+        return None
+    if not force_prompt and saved_token and saved_user == user:
+        token = saved_token
+        ui.substep(f"{registry.prompt_label}: reusing saved token")
+    else:
+        token = getpass.getpass(
+            f"  {registry.prompt_label} token / password (hidden): "
+        ).strip()
     if not token:
-        ui.error(f"{registry.prompt_label} token is required.")
-        raise SystemExit(1)
+        ui.warning(f"{registry.prompt_label} token empty — skipping")
+        return None
     return Creds(user=user, token=token)
 
 
-def _docker_login(registry: Registry, creds: Creds) -> None:
+def _docker_login(registry: Registry, creds: Creds) -> bool:
     ui.substep(f"docker login {registry.host} (user={creds.user})")
     p = subprocess.run(
         ["docker", "login", registry.host, "-u", creds.user, "--password-stdin"],
@@ -530,8 +574,26 @@ def _docker_login(registry: Registry, creds: Creds) -> None:
     )
     if p.returncode != 0:
         detail = (p.stderr or p.stdout or "").strip()
-        ui.error(f"docker login failed for {registry.host}: {detail}")
-        raise SystemExit(1)
+        ui.warning(f"docker login failed for {registry.host}: {detail}")
+        return False
+    return True
+
+
+def _persist_creds(
+    paths: ProjectPaths,
+    saved: dict[str, str],
+    registry: Registry,
+    creds: Creds,
+) -> None:
+    save_secrets(
+        paths,
+        {
+            registry.user_key: creds.user,
+            registry.token_key: creds.token,
+        },
+    )
+    saved[registry.user_key] = creds.user
+    saved[registry.token_key] = creds.token
 
 
 def collect_and_login(names: list[str], paths: ProjectPaths) -> dict[str, Creds]:
@@ -539,26 +601,75 @@ def collect_and_login(names: list[str], paths: ProjectPaths) -> dict[str, Creds]
         return {}
     ui.step("Registry credentials")
     saved = load_saved_secrets(paths)
-    if secrets_file(paths).is_file():
-        ui.info(f"Loaded saved secrets from {secrets_file(paths).relative_to(paths.deployment_root)}")
+    secrets_path = secrets_file(paths)
+    if secrets_path.is_file():
+        try:
+            shown = secrets_path.relative_to(paths.deployment_root)
+        except ValueError:
+            shown = secrets_path
+        ui.info(f"Loaded saved secrets from {shown}")
 
     creds_map: dict[str, Creds] = {}
-    to_save: dict[str, str] = {}
+    skipped: list[str] = []
     for name in names:
         registry = REGISTRIES[name]
+        had_saved = bool(
+            (saved.get(registry.user_key) or "").strip()
+            and (saved.get(registry.token_key) or "").strip()
+        )
         creds = _prompt_creds(registry, saved)
-        _docker_login(registry, creds)
-        creds_map[name] = creds
-        to_save[registry.user_key] = creds.user
-        to_save[registry.token_key] = creds.token
+        if creds is None:
+            skipped.append(name)
+            continue
 
-    save_secrets(paths, to_save)
-    ui.success("Registry logins OK")
+        # Always persist before login — failed logins must still remember what was typed.
+        _persist_creds(paths, saved, registry, creds)
+
+        if _docker_login(registry, creds):
+            creds_map[name] = creds
+            continue
+
+        if had_saved and sys.stdin.isatty() and _confirm(
+            f"Re-enter {registry.prompt_label} credentials?",
+            default=True,
+        ):
+            creds = _prompt_creds(registry, saved, force_prompt=True)
+            if creds is not None:
+                _persist_creds(paths, saved, registry, creds)
+                if _docker_login(registry, creds):
+                    creds_map[name] = creds
+                    continue
+
+        skipped.append(name)
+
+    if skipped:
+        ui.warning("Skipped registries after login/credential failures: " + ", ".join(skipped))
+    if creds_map:
+        ui.success("Logged in: " + ", ".join(creds_map))
+    elif names:
+        ui.error("All registry logins failed.")
+        raise SystemExit(1)
     return creds_map
 
 
 def _ref_for(registry: Registry, service: str, tag: str) -> str:
     return f"{registry.image_tpl.format(service=service)}:{tag}"
+
+
+def _publish_tags(version_tag: str) -> list[str]:
+    """Version tag plus `latest` (unless the version is already latest)."""
+    if version_tag == LATEST_TAG:
+        return [LATEST_TAG]
+    return [version_tag, LATEST_TAG]
+
+
+def _native_platform() -> str:
+    machine = py_platform.machine().lower()
+    if machine in ("x86_64", "amd64"):
+        return "linux/amd64"
+    if machine in ("aarch64", "arm64"):
+        return "linux/arm64"
+    return "linux/amd64"
 
 
 def _oci_labels(
@@ -587,32 +698,101 @@ def _oci_labels(
     return labels
 
 
-def _build_one(
+def _local_image_ref(service: str, tag: str) -> str:
+    return f"fromchat/{service}:{tag}"
+
+
+def _local_image_exists(ref: str) -> bool:
+    return (
+        subprocess.run(
+            ["docker", "image", "inspect", ref],
+            capture_output=True,
+        ).returncode
+        == 0
+    )
+
+
+def _tag_local(src: str, dest: str) -> bool:
+    p = subprocess.run(
+        ["docker", "tag", src, dest],
+        capture_output=True,
+        text=True,
+    )
+    if p.returncode != 0:
+        detail = (p.stderr or p.stdout or "").strip()
+        ui.warning(f"docker tag {src} → {dest} failed: {detail}")
+        return False
+    return True
+
+
+def _ensure_local_latest(service: str, version_tag: str) -> None:
+    """Point fromchat/<service>:latest at the version image when present."""
+    if version_tag == LATEST_TAG:
+        return
+    src = _local_image_ref(service, version_tag)
+    dest = _local_image_ref(service, LATEST_TAG)
+    if not _local_image_exists(src):
+        return
+    if _tag_local(src, dest):
+        ui.substep(f"local → {dest}")
+
+
+def _push_one_local(
     spec: ImageSpec,
     tag: str,
     *,
     push_to: list[str],
-) -> None:
-    local_ref = f"fromchat/{spec.service}:{tag}"
-    tags: list[str] = [local_ref]
+) -> list[str]:
+    """Retag a local fromchat/* image and push version + latest to each registry.
+
+    Returns the registry names that succeeded (at least one tag pushed).
+    """
+    local_ref = _local_image_ref(spec.service, tag)
+    ui.step(f"Push {spec.service}:{tag} (+ {LATEST_TAG}) (local image, no rebuild)")
+    if not _local_image_exists(local_ref):
+        ui.error(
+            f"Local image missing: {local_ref}. "
+            "Build first (omit --no-build) or load the image into Docker."
+        )
+        raise SystemExit(1)
+    ui.substep(f"source → {local_ref}")
+    _ensure_local_latest(spec.service, tag)
+
+    ok: list[str] = []
     for reg_name in push_to:
-        tags.append(_ref_for(REGISTRIES[reg_name], spec.service, tag))
-    seen: set[str] = set()
-    unique_tags: list[str] = []
-    for t in tags:
-        if t not in seen:
-            seen.add(t)
-            unique_tags.append(t)
+        registry = REGISTRIES[reg_name]
+        pushed_any = False
+        for t in _publish_tags(tag):
+            remote = _ref_for(registry, spec.service, t)
+            ui.substep(f"tag → {remote}")
+            if not _tag_local(local_ref, remote):
+                continue
+            ui.substep(f"push → {remote}")
+            if subprocess.run(["docker", "push", remote]).returncode != 0:
+                ui.warning(f"docker push failed for {remote} — skipping tag")
+                continue
+            pushed_any = True
+        if pushed_any:
+            ok.append(reg_name)
 
-    revision = git_sha(spec.repo_root)
-    source_url = git_source_url(spec.repo_root)
+    if ok:
+        ui.success(f"{spec.service}:{tag} (+ {LATEST_TAG}) pushed → " + ", ".join(ok))
+    else:
+        ui.warning(f"{spec.service}:{tag}: no registry accepted the push")
+    return ok
 
-    ui.step(f"Build {spec.service}:{tag} ({PLATFORMS})")
-    if source_url:
-        ui.substep(f"source → {source_url}")
-    for t in unique_tags:
-        ui.substep(t)
 
+def _buildx_cmd(
+    spec: ImageSpec,
+    tags: list[str],
+    *,
+    revision: str,
+    source_url: str,
+    version_tag: str,
+    platforms: str,
+    mode: str,
+) -> list[str]:
+    """mode: 'push' | 'load' | 'cache'."""
     cmd = [
         "docker",
         "buildx",
@@ -620,34 +800,144 @@ def _build_one(
         "--builder",
         BUILDER_NAME,
         "--platform",
-        PLATFORMS,
+        platforms,
         "--file",
         str(spec.dockerfile),
         "--tag",
-        unique_tags[0],
+        tags[0],
     ]
-    for extra in unique_tags[1:]:
+    for extra in tags[1:]:
         cmd.extend(["--tag", extra])
     if spec.target:
         cmd.extend(["--target", spec.target])
     for key, val in spec.build_args:
         cmd.extend(["--build-arg", f"{key}={val}"])
-
-    for key, val in _oci_labels(spec, tag, revision, source_url):
+    for key, val in _oci_labels(spec, version_tag, revision, source_url):
         cmd.extend(["--label", f"{key}={val}"])
-        cmd.extend(["--annotation", f"index:{key}={val}"])
-        cmd.extend(["--annotation", f"manifest:{key}={val}"])
-
-    if push_to:
+        # Index annotations are only valid for multi-platform (registry) exports.
+        if mode != "load":
+            cmd.extend(["--annotation", f"index:{key}={val}"])
+            cmd.extend(["--annotation", f"manifest:{key}={val}"])
+    if mode == "push":
         cmd.append("--push")
+    elif mode == "load":
+        cmd.append("--load")
     else:
         cmd.extend(["--output", "type=image,push=false"])
     cmd.append(str(spec.context))
+    return cmd
 
+
+def _load_local_native(
+    spec: ImageSpec,
+    version_tag: str,
+    *,
+    revision: str,
+    source_url: str,
+) -> None:
+    """Load the host platform into the local Docker engine as :version and :latest."""
+    native = _native_platform()
+    local_tags = [_local_image_ref(spec.service, t) for t in _publish_tags(version_tag)]
+    ui.substep(f"local load ({native}) → " + ", ".join(local_tags))
+    cmd = _buildx_cmd(
+        spec,
+        local_tags,
+        revision=revision,
+        source_url=source_url,
+        version_tag=version_tag,
+        platforms=native,
+        mode="load",
+    )
     if subprocess.run(cmd).returncode != 0:
-        ui.error(f"buildx failed for {spec.service}")
-        raise SystemExit(1)
-    ui.success(f"{spec.service}:{tag} ready")
+        ui.warning(
+            f"Could not load {spec.service} into the local Docker engine "
+            f"(multi-arch push may still have succeeded)."
+        )
+        return
+    for ref in local_tags:
+        ui.substep(f"local → {ref}")
+
+
+def _build_one(
+    spec: ImageSpec,
+    tag: str,
+    *,
+    push_to: list[str],
+) -> list[str]:
+    """Build multi-arch image; push version+latest per registry; keep native tags locally.
+
+    Returns the registry names that were pushed successfully.
+    """
+    revision = git_sha(spec.repo_root)
+    source_url = git_source_url(spec.repo_root)
+    local_preview = ", ".join(
+        _local_image_ref(spec.service, t) for t in _publish_tags(tag)
+    )
+
+    ui.step(f"Build {spec.service}:{tag} ({PLATFORMS})")
+    if source_url:
+        ui.substep(f"source → {source_url}")
+    ui.substep(f"local targets → {local_preview}")
+
+    if not push_to:
+        # Multi-arch stays in the builder; also load native into Docker.
+        cmd = _buildx_cmd(
+            spec,
+            [_local_image_ref(spec.service, t) for t in _publish_tags(tag)],
+            revision=revision,
+            source_url=source_url,
+            version_tag=tag,
+            platforms=PLATFORMS,
+            mode="cache",
+        )
+        if subprocess.run(cmd).returncode != 0:
+            ui.error(f"buildx failed for {spec.service}")
+            raise SystemExit(1)
+        _load_local_native(
+            spec,
+            tag,
+            revision=revision,
+            source_url=source_url,
+        )
+        ui.success(f"{spec.service}:{tag} ready locally (not pushed)")
+        return []
+
+    ok: list[str] = []
+    for reg_name in push_to:
+        registry = REGISTRIES[reg_name]
+        remotes = [_ref_for(registry, spec.service, t) for t in _publish_tags(tag)]
+        ui.substep("push → " + ", ".join(remotes))
+        cmd = _buildx_cmd(
+            spec,
+            remotes,
+            revision=revision,
+            source_url=source_url,
+            version_tag=tag,
+            platforms=PLATFORMS,
+            mode="push",
+        )
+        if subprocess.run(cmd).returncode != 0:
+            ui.warning(
+                f"buildx push failed for {registry.prompt_label} — skipping registry"
+            )
+            continue
+        ok.append(reg_name)
+
+    # Always leave native platform images tagged in the local engine.
+    _load_local_native(
+        spec,
+        tag,
+        revision=revision,
+        source_url=source_url,
+    )
+
+    if ok:
+        ui.success(
+            f"{spec.service}:{tag} (+ {LATEST_TAG}) ready → " + ", ".join(ok)
+        )
+    else:
+        ui.warning(f"{spec.service}:{tag}: build/push failed for every registry")
+    return ok
 
 
 def _http_json(
@@ -717,13 +1007,16 @@ def verify_dockerhub_tags_free(
     specs: list[ImageSpec],
     repo_tags: dict[Path, str],
     creds: Creds,
-) -> None:
-    """Abort before build if any planned Docker Hub tags already exist."""
+) -> bool:
+    """Ensure planned Docker Hub tags are free (or deleted with confirmation).
+
+    Returns False if Docker Hub should be skipped (check/delete failed).
+    """
     ui.step("Checking Docker Hub tags")
     jwt = _dockerhub_jwt(creds.user, creds.token)
     if not jwt:
-        ui.error("Docker Hub API login failed; cannot verify tags before build.")
-        raise SystemExit(1)
+        ui.warning("Docker Hub API login failed; skipping Docker Hub.")
+        return False
 
     conflicts: list[tuple[str, str]] = []
     errors: list[str] = []
@@ -746,12 +1039,12 @@ def verify_dockerhub_tags_free(
             ui.substep(f"{ref} — check failed")
 
     if errors:
-        ui.error(
+        ui.warning(
             "Could not verify Docker Hub tags for: "
             + ", ".join(errors)
-            + ". Fix API access and retry."
+            + ". Skipping Docker Hub."
         )
-        raise SystemExit(1)
+        return False
     if conflicts:
         conflict_refs = [f"fromchat/{service}:{tag}" for service, tag in conflicts]
         ui.warning(
@@ -759,17 +1052,17 @@ def verify_dockerhub_tags_free(
             + "\n  ".join(conflict_refs)
         )
         if not sys.stdin.isatty() or not sys.stdout.isatty():
-            ui.error(
-                "Refusing to publish over existing tags. "
-                "Delete them on Docker Hub, bump the git tag, or run interactively."
+            ui.warning(
+                "Refusing to overwrite existing Docker Hub tags non-interactively — "
+                "skipping Docker Hub."
             )
-            raise SystemExit(1)
+            return False
         if not _confirm(
             f"Delete all {len(conflicts)} conflicting tag(s) on Docker Hub and continue?",
             default=False,
         ):
-            ui.error("Publish cancelled — conflicting Docker Hub tags were not deleted.")
-            raise SystemExit(1)
+            ui.warning("Skipping Docker Hub — conflicting tags were not deleted.")
+            return False
 
         ui.substep("Deleting conflicting Docker Hub tags")
         failed: list[str] = []
@@ -782,28 +1075,30 @@ def verify_dockerhub_tags_free(
                 ui.substep(f"{ref} — delete failed")
 
         if failed:
-            ui.error(
+            ui.warning(
                 "Could not delete Docker Hub tags:\n  "
                 + "\n  ".join(failed)
+                + "\nSkipping Docker Hub."
             )
-            raise SystemExit(1)
+            return False
 
         still_there: list[str] = []
         for service, tag in conflicts:
             if dockerhub_tag_exists(service, tag, jwt):
                 still_there.append(f"fromchat/{service}:{tag}")
         if still_there:
-            ui.error(
+            ui.warning(
                 "Docker Hub tags still present after delete:\n  "
                 + "\n  ".join(still_there)
+                + "\nSkipping Docker Hub."
             )
-            raise SystemExit(1)
+            return False
 
         ui.success(f"Deleted {len(conflicts)} conflicting Docker Hub tag(s)")
-        return
+        return True
 
     ui.success("Docker Hub tags are free")
-
+    return True
 
 def bind_dockerhub_repo(service: str, repo_root: Path, creds: Creds) -> None:
     jwt = _dockerhub_jwt(creds.user, creds.token)
@@ -911,7 +1206,8 @@ def bind_repos_after_push(
 def _parse_args(argv: list[str]) -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         description=(
-            "Build FromChat images for linux/amd64 + linux/arm64. "
+            "Build FromChat images for linux/amd64 + linux/arm64 and push them to "
+            "GitHub Packages + Gitea (Docker Hub optional). "
             "Discovers publishable services from compose build blocks. "
             "Image tags match each repo's git tag on HEAD. "
             f"Choices are saved under {SECRETS_DIRNAME}/{PUBLISH_SETTINGS_FILENAME}."
@@ -930,7 +1226,7 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         help=(
             "Registries to push: dockerhub,github,gitea (comma-separated), "
             "or 'all'. With bare --push, pushes to all. "
-            "Omit for an interactive prompt (TTY) or no push (non-TTY)."
+            "Omit to use saved choices / interactive prompt; GitHub + Gitea are always included."
         ),
     )
     ap.add_argument(
@@ -938,7 +1234,49 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         help="Build only (multi-arch in buildx); do not push",
     )
+    ap.add_argument(
+        "--no-build",
+        action="store_true",
+        help=(
+            "Do not build; retag and push existing local fromchat/<service>:<tag> images "
+            "to the selected registries (requires --push destinations or defaults)."
+        ),
+    )
     return ap.parse_args(argv)
+
+
+def _resolve_push_to(args: argparse.Namespace, saved: dict[str, object] | None) -> list[str]:
+    if args.no_push:
+        if args.no_build:
+            ui.error("--no-build requires push destinations (cannot combine with --no-push).")
+            raise SystemExit(1)
+        return []
+
+    parsed = _parse_push_list(args.push)
+    if parsed is not None:
+        if not parsed:
+            return []
+        push_to = parsed
+    else:
+        push_to = _saved_registries(saved)
+        if push_to:
+            ui.step("Push destinations (saved + required)")
+            labels = _registry_labels()
+            for name in _ensure_default_push_registries(push_to):
+                if name not in push_to:
+                    ui.substep(f"{labels.get(name, name)} — required (added)")
+                else:
+                    ui.substep(labels.get(name, name))
+        elif sys.stdin.isatty() and sys.stdout.isatty():
+            push_to = _select_registries_interactive(saved)
+        else:
+            push_to = list(DEFAULT_PUSH_REGISTRIES)
+            ui.step("Push destinations (default)")
+            labels = _registry_labels()
+            for name in push_to:
+                ui.substep(labels.get(name, name))
+
+    return _ensure_default_push_registries(push_to)
 
 
 def _run(argv: list[str] | None = None) -> None:
@@ -947,9 +1285,13 @@ def _run(argv: list[str] | None = None) -> None:
     saved = load_publish_settings(paths)
 
     ui.build_banner()
-    ui.info("Platforms: " + PLATFORMS)
+    if args.no_build:
+        ui.info("Mode: push local images only (--no-build)")
+    else:
+        ui.info("Platforms: " + PLATFORMS)
     ui.info("Publishable services are read from compose build: blocks in backend, web, and updater.")
     ui.info("Tags come from each source repo's git tag on HEAD.")
+    ui.info("Default registries: GitHub Packages + Gitea.")
     if saved:
         ui.info(f"Loaded saved choices from {SECRETS_DIRNAME}/{PUBLISH_SETTINGS_FILENAME}")
 
@@ -965,59 +1307,60 @@ def _run(argv: list[str] | None = None) -> None:
 
     specs = [s for s in all_specs if s.service in selected_names]
 
-    if args.no_push:
-        push_to: list[str] = []
-    else:
-        parsed = _parse_push_list(args.push)
-        if parsed is not None:
-            push_to = parsed
-        else:
-            push_to = _saved_registries(saved)
-            if push_to:
-                ui.step("Push destinations (saved)")
-                labels = {
-                    "dockerhub": "Docker Hub (fromchat/*)",
-                    "github": "GitHub Packages (ghcr.io/fromchat-messenger/*)",
-                    "gitea": "Gitea (git.fromchat.ru/fromchat/*)",
-                }
-                for name in push_to:
-                    ui.substep(labels.get(name, name))
-            elif sys.stdin.isatty() and sys.stdout.isatty():
-                push_to = _select_registries_interactive(saved)
-            else:
-                push_to = []
+    push_desired = _resolve_push_to(args, saved)
 
     ensure_daemon()
-    ensure_buildx(use_compose_build=False)
+    if not args.no_build:
+        ensure_buildx(use_compose_build=False)
 
     ui.step("Resolving git tags at HEAD")
     repo_tags = _resolve_tags(specs)
 
-    creds_map = collect_and_login(push_to, paths)
+    creds_map = collect_and_login(push_desired, paths)
+    # Only push where login succeeded.
+    push_to = [name for name in push_desired if name in creds_map]
 
     if "dockerhub" in push_to and "dockerhub" in creds_map:
-        verify_dockerhub_tags_free(specs, repo_tags, creds_map["dockerhub"])
+        if not verify_dockerhub_tags_free(specs, repo_tags, creds_map["dockerhub"]):
+            push_to = [name for name in push_to if name != "dockerhub"]
+            creds_map.pop("dockerhub", None)
 
-    if not push_to:
+    if not push_to and args.no_build:
+        ui.error("No registries available to push after login/check failures.")
+        raise SystemExit(1)
+
+    if not push_to and not args.no_build:
         ui.warning(
             "No push targets — multi-arch images stay in the buildx builder "
             "(not loaded into the local Docker engine)."
         )
 
+    pushed_any: set[str] = set()
     for spec in specs:
-        if not spec.dockerfile.is_file():
+        if not args.no_build and not spec.dockerfile.is_file():
             ui.error(f"Dockerfile missing: {spec.dockerfile}")
             raise SystemExit(1)
         tag = repo_tags[spec.repo_root]
-        _build_one(spec, tag, push_to=push_to)
+        if args.no_build:
+            ok_regs = _push_one_local(spec, tag, push_to=push_to)
+        else:
+            ok_regs = _build_one(spec, tag, push_to=push_to)
+        pushed_any.update(ok_regs)
 
-    bind_repos_after_push(specs, push_to, creds_map)
+    if push_to and not pushed_any:
+        ui.error("Nothing was pushed to any registry.")
+        raise SystemExit(1)
 
-    save_publish_settings(paths, services=selected_names, registries=push_to)
+    bind_repos_after_push(specs, sorted(pushed_any), creds_map)
 
-    ui.success("Publish build complete")
-    if push_to:
-        ui.info("Pushed to: " + ", ".join(push_to))
+    save_publish_settings(paths, services=selected_names, registries=push_desired)
+
+    ui.success("Publish complete" if args.no_build else "Publish build complete")
+    if pushed_any:
+        ui.info("Pushed to: " + ", ".join(sorted(pushed_any)))
+    missed = [name for name in push_desired if name not in pushed_any]
+    if missed and push_desired:
+        ui.warning("Skipped / failed: " + ", ".join(missed))
 
 
 def main(argv: list[str] | None = None) -> None:

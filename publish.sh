@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
-# Build FromChat images for linux/amd64 + linux/arm64; optionally push to
-# Docker Hub, GitHub Packages, and Gitea. Tags match each component's git tag on HEAD.
+# Build FromChat images for linux/amd64 + linux/arm64 and push to GitHub Packages
+# + Gitea (Docker Hub optional). Tags match each component's git tag on HEAD and
+# also publish `:latest`. Native-platform images stay tagged locally as
+# fromchat/<service>:<version> and fromchat/<service>:latest.
+#
+#   ./publish.sh                  # build + push (github + gitea always)
+#   ./publish.sh --no-build       # retag/push existing local fromchat/* images only
+#   ./publish.sh --no-push        # build only (still loads local tags)
+#   ./publish.sh --push all       # also include Docker Hub
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
