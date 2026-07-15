@@ -291,7 +291,11 @@ def _generate_compose(
     if keep_build:
         cmd.append("--keep-build")
     if "backend" in components and paths.backend_dir:
-        cmd.extend(["--backend-compose", str(paths.backend_dir / "compose.yml")])
+        backend_compose = paths.backend_dir / "compose.yml"
+        cmd.extend(["--backend-compose", str(backend_compose)])
+        backend_prod = paths.backend_dir / "compose.prod.yml"
+        if backend_prod.is_file():
+            cmd.extend(["--backend-compose-prod", str(backend_prod)])
         cmd.extend(["--backend-root", str(paths.backend_dir)])
     if "frontend" in components and paths.web_dir:
         cmd.extend(["--frontend-compose", str(paths.web_dir / "compose.yml")])

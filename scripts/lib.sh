@@ -191,7 +191,7 @@ print_success_banner() {
 
 # Merge component compose files into ${install_dir}/compose.yml (image: fromchat/*:<tag>).
 # Optional local compose paths (skip remote fetch when set):
-#   LOCAL_BACKEND_COMPOSE, LOCAL_FRONTEND_COMPOSE
+#   LOCAL_BACKEND_COMPOSE, LOCAL_BACKEND_COMPOSE_PROD, LOCAL_FRONTEND_COMPOSE
 # Requires: DEPLOYMENT_ROOT, BACKEND_REPO, WEB_REPO (for remote fetch).
 run_generate_compose() {
   local install_dir="$1"
@@ -202,9 +202,10 @@ run_generate_compose() {
 
   step "Generating compose.yml for tag ${tag} (components: ${components_csv})…"
 
-  local need_backend=false need_frontend=false
+  local need_backend=false need_frontend=false need_caddy=false
   [[ ",${components_csv}," == *,backend,* ]] && need_backend=true
   [[ ",${components_csv}," == *,frontend,* ]] && need_frontend=true
+  [[ ",${components_csv}," == *,caddy,* ]] && need_caddy=true
 
   if ${need_backend}; then
     if [[ -n "${LOCAL_BACKEND_COMPOSE:-}" && -f "${LOCAL_BACKEND_COMPOSE}" ]]; then
@@ -214,6 +215,16 @@ run_generate_compose() {
       fetch_raw_file "${BACKEND_REPO}" "${tag}" "compose.yml" \
         "${tmp}/backend.compose.yml"
       success "Backend compose.yml"
+    fi
+    if ${need_caddy}; then
+      if [[ -n "${LOCAL_BACKEND_COMPOSE_PROD:-}" && -f "${LOCAL_BACKEND_COMPOSE_PROD}" ]]; then
+        cp -f "${LOCAL_BACKEND_COMPOSE_PROD}" "${tmp}/backend.compose.prod.yml"
+        success "Backend compose.prod.yml (local)"
+      else
+        fetch_raw_file "${BACKEND_REPO}" "${tag}" "compose.prod.yml" \
+          "${tmp}/backend.compose.prod.yml"
+        success "Backend compose.prod.yml"
+      fi
     fi
   fi
   if ${need_frontend}; then
@@ -239,6 +250,9 @@ run_generate_compose() {
   )
   if ${need_backend}; then
     gen_args+=(--backend-compose "${tmp}/backend.compose.yml")
+    if ${need_caddy}; then
+      gen_args+=(--backend-compose-prod "${tmp}/backend.compose.prod.yml")
+    fi
   fi
   if ${need_frontend}; then
     gen_args+=(--frontend-compose "${tmp}/frontend.compose.yml")

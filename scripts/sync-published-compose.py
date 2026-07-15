@@ -123,9 +123,13 @@ def sync_published_compose(
     tmp = Path(tempfile.mkdtemp(prefix="fromchat-sync-compose-"))
     try:
         backend_compose = tmp / "backend.compose.yml"
+        backend_compose_prod = tmp / "backend.compose.prod.yml"
         web_compose = tmp / "frontend.compose.yml"
         backend_compose.write_bytes(
             fetch_raw_file(backend_repo, tag, "compose.yml", token)
+        )
+        backend_compose_prod.write_bytes(
+            fetch_raw_file(backend_repo, tag, "compose.prod.yml", token)
         )
         web_compose.write_bytes(
             fetch_raw_file(web_repo, tag, "compose.yml", token)
@@ -133,6 +137,7 @@ def sync_published_compose(
 
         generate(
             backend_compose=backend_compose,
+            backend_compose_prod=backend_compose_prod,
             frontend_compose=web_compose,
             tag=tag,
             components=set(components),

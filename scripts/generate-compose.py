@@ -1,15 +1,13 @@
 #!/usr/bin/env python3
 """
 Merge backend (+ frontend / updater) compose for production deploy.
-Uses backend compose as the source of truth (including caddy + livekit).
+Uses backend compose.yml as the base; merges compose.prod.yml when caddy is selected.
 Replaces build: with image: fromchat/<service>:<tag>.
-When caddy is not selected, the caddy service is left commented out in the file.
 """
 from __future__ import annotations
 
 import argparse
 import copy
-import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -32,7 +30,7 @@ FROMCHAT_IMAGE_SERVICES = frozenset(
 )
 
 BACKEND_SERVICES = frozenset(
-    {"backend", "messaging", "file_storage", "livekit", "postgres", "caddy", "haproxy"}
+    {"backend", "messaging", "file_storage", "livekit", "postgres"}
 )
 FRONTEND_SERVICES = frozenset({"web"})
 UPDATER_SERVICES = frozenset({"updater"})
@@ -141,6 +139,19 @@ def _rewrite_build_context(build: dict[str, Any], root: Path) -> None:
     build["dockerfile"] = dockerfile
 
 
+def resolve_backend_compose_prod(
+    backend_compose: Path | None,
+    explicit: Path | None,
+) -> Path | None:
+    if explicit is not None:
+        return explicit if explicit.is_file() else None
+    if backend_compose is not None and backend_compose.is_file():
+        candidate = backend_compose.parent / "compose.prod.yml"
+        if candidate.is_file():
+            return candidate
+    return None
+
+
 def load_updater_service(updater_root: Path) -> dict[str, Any]:
     compose_path = updater_root / "compose.yml"
     if compose_path.is_file():
@@ -187,37 +198,10 @@ def filter_services(
     return {name: cfg for name, cfg in services.items() if name in enabled}
 
 
-def comment_out_service(yaml_text: str, service_name: str) -> str:
-    """Comment out a top-level service block (two-space indent under services:)."""
-    lines = yaml_text.splitlines(keepends=True)
-    out: list[str] = []
-    commenting = False
-    header = re.compile(rf"^  {re.escape(service_name)}:\s*(#.*)?$")
-    next_svc = re.compile(r"^  [A-Za-z0-9_-]+:\s*(#.*)?$")
-    top_key = re.compile(r"^[A-Za-z0-9_-]+:\s*(#.*)?$")
-
-    for line in lines:
-        if not commenting and header.match(line.rstrip("\n")):
-            commenting = True
-            out.append(f"# {line}" if not line.startswith("#") else line)
-            continue
-        if commenting:
-            if next_svc.match(line.rstrip("\n")) or top_key.match(line.rstrip("\n")):
-                commenting = False
-                out.append(line)
-                continue
-            if line.startswith("#") or line.strip() == "":
-                out.append(line)
-            else:
-                out.append(f"# {line}" if not line.startswith("#") else line)
-            continue
-        out.append(line)
-    return "".join(out)
-
-
 def generate(
     *,
     backend_compose: Path | None,
+    backend_compose_prod: Path | None = None,
     frontend_compose: Path | None,
     tag: str,
     components: set[str],
@@ -234,25 +218,24 @@ def generate(
     enabled: set[str] = set()
     if "backend" in components:
         enabled |= BACKEND_SERVICES
-        if not include_caddy:
-            enabled -= CADDY_STACK_SERVICES
+    if include_caddy:
+        enabled |= CADDY_STACK_SERVICES
     if "frontend" in components:
         enabled |= FRONTEND_SERVICES
     if include_updater:
         enabled |= UPDATER_SERVICES
 
-    # Keep caddy/haproxy in the dumped file so we can comment them out (production).
-    comment_caddy = (
-        not keep_build
-        and "backend" in components
-        and not include_caddy
-    )
-    if comment_caddy:
-        enabled |= CADDY_STACK_SERVICES
-
     sources: list[Path] = []
     if backend_compose and backend_compose.is_file():
         sources.append(backend_compose)
+    if include_caddy:
+        prod_compose = resolve_backend_compose_prod(backend_compose, backend_compose_prod)
+        if prod_compose is None:
+            raise SystemExit(
+                "caddy component selected but backend compose.prod.yml was not found "
+                "(pass --backend-compose-prod or place it next to compose.yml)"
+            )
+        sources.append(prod_compose)
     if frontend_compose and frontend_compose.is_file():
         sources.append(frontend_compose)
 
@@ -318,20 +301,9 @@ def generate(
     if not merged.get("volumes"):
         merged.pop("volumes", None)
 
-    text = dump_yaml_str(merged)
-    if comment_caddy:
-        commented = 0
-        for svc in ("haproxy", "caddy"):
-            if svc in services:
-                text = comment_out_service(text, svc)
-                commented += 1
-        active = len(services) - commented
-    else:
-        active = len(services)
-
     output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(text, encoding="utf-8")
-    print(f"Wrote {output} ({active} services, tag {tag})", file=sys.stderr)
+    output.write_text(dump_yaml_str(merged), encoding="utf-8")
+    print(f"Wrote {output} ({len(services)} services, tag {tag})", file=sys.stderr)
 
 
 def parse_args() -> argparse.Namespace:
@@ -343,6 +315,7 @@ def parse_args() -> argparse.Namespace:
         help="Comma-separated: backend,frontend,caddy",
     )
     parser.add_argument("--backend-compose", type=Path, default=None)
+    parser.add_argument("--backend-compose-prod", type=Path, default=None)
     parser.add_argument("--frontend-compose", type=Path, default=None)
     parser.add_argument("--output", type=Path, default=Path("compose.yml"))
     parser.add_argument(
@@ -362,6 +335,7 @@ def main() -> None:
     components = {c.strip().lower() for c in args.components.split(",") if c.strip()}
     generate(
         backend_compose=args.backend_compose,
+        backend_compose_prod=args.backend_compose_prod,
         frontend_compose=args.frontend_compose,
         tag=args.tag,
         components=components,

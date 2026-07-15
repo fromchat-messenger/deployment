@@ -245,6 +245,9 @@ def discover_image_specs(paths: ProjectPaths) -> list[ImageSpec]:
     compose_files: list[tuple[Path, Path]] = []
     if paths.backend_dir and (paths.backend_dir / "compose.yml").is_file():
         compose_files.append((paths.backend_dir, paths.backend_dir / "compose.yml"))
+        prod_compose = paths.backend_dir / "compose.prod.yml"
+        if prod_compose.is_file():
+            compose_files.append((paths.backend_dir, prod_compose))
     if paths.web_dir and (paths.web_dir / "compose.yml").is_file():
         compose_files.append((paths.web_dir, paths.web_dir / "compose.yml"))
     if paths.updater_dir and (paths.updater_dir / "compose.yml").is_file():
