@@ -48,16 +48,6 @@ def _prepare_build_dir(
     if env_src:
         shutil.copy2(env_src, build_dir / ".env")
 
-    if paths.livekit_config_src:
-        dest = build_dir / "src" / "livekit" / "compose.yaml"
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(paths.livekit_config_src, dest)
-
-    if paths.haproxy_config_src:
-        dest = build_dir / "src" / "haproxy.cfg"
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(paths.haproxy_config_src, dest)
-
     generate_build_compose(
         paths,
         components=compose_components,
@@ -102,16 +92,6 @@ def _prepare_staging(
             include_updater=include_updater,
         )
         (staging / ".fromchat-version").write_text(tag + "\n", encoding="utf-8")
-
-        if paths.livekit_config_src and "backend" in compose_components:
-            dest = staging / "src" / "livekit" / "compose.yaml"
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(paths.livekit_config_src, dest)
-
-        if paths.haproxy_config_src and "caddy" in compose_components:
-            dest = staging / "src" / "haproxy.cfg"
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(paths.haproxy_config_src, dest)
 
         if paths.systemd_unit_template.is_file():
             unit = paths.systemd_unit_template.read_text(encoding="utf-8")

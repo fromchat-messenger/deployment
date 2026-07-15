@@ -1,0 +1,43 @@
+name: Sync published compose
+
+on:
+  schedule:
+    - cron: "0 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install PyYAML
+
+      - name: Generate compose.yml
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GIT_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/sync-published-compose.py
+
+      - name: Commit and push
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add compose.yml
+          if git diff --staged --quiet; then
+            echo "No changes to compose.yml."
+          else
+            tag="$(sed -n 's/^# Tag: //p' compose.yml | head -1)"
+            git commit -m "chore: sync compose.yml to ${tag:-latest}"
+            git push
+          fi

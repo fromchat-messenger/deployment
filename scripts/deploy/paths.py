@@ -44,8 +44,6 @@ class ProjectPaths:
     input_hash_script: Path
     systemd_unit_template: Path
     generate_compose_script: Path
-    livekit_config_src: Path | None
-    haproxy_config_src: Path | None
 
     @classmethod
     def from_deploy_package(cls) -> ProjectPaths:
@@ -69,18 +67,10 @@ class ProjectPaths:
             str(parent / "updater"),
         )
         caddy_build = None
-        livekit_src = None
-        haproxy_src = None
         if backend:
             cand = backend / "src" / "caddy"
             if cand.is_dir() and (cand / "Dockerfile").is_file():
                 caddy_build = cand
-            lk = backend / "src" / "livekit" / "compose.yaml"
-            if lk.is_file():
-                livekit_src = lk
-            hp = backend / "src" / "haproxy.cfg"
-            if hp.is_file():
-                haproxy_src = hp
 
         # Production secrets and deploy settings: deployment/.env.prod only
         env_file = deployment_root / ".env.prod"
@@ -100,8 +90,6 @@ class ProjectPaths:
             input_hash_script=scripts_dir / "docker_inputs_hash.py",
             systemd_unit_template=deployment_root / "templates" / "fromchat.service",
             generate_compose_script=scripts_dir / "generate-compose.py",
-            livekit_config_src=livekit_src,
-            haproxy_config_src=haproxy_src,
         )
 
     def compose_for(self, component: str) -> Path | None:

@@ -19,10 +19,9 @@ The installer:
 7. Resolves the latest common semver tag (`v1.0`, `v1.0.0`, …)
 8. Downloads only `compose.yml` from each repo at that tag
 9. Merges compose files and replaces `build:` with `image: fromchat/<service>:<tag>`
-   (caddy comes from backend compose; if not selected it is commented out)
-10. Copies backend `src/livekit/compose.yaml` into the install dir
-11. Runs `docker compose up -d`
-12. Writes `updater/.env` when updater is selected (updater runs in the main stack)
+   (caddy, livekit, and haproxy configs are baked into their images; secrets via `.env`)
+10. Runs `docker compose up -d`
+11. Writes `updater/.env` when updater is selected (updater runs in the main stack)
 
 ## Classic deploy (offline, build on your PC)
 
@@ -73,11 +72,10 @@ The old entry point `backend/scripts/deploy.sh` redirects here.
 
 ```
 ~/fromchat-server/
-  compose.yml                 # merged production stack (from backend ± web)
+  compose.yml                 # merged production stack (fromchat/* images)
   .fromchat-version           # current release tag
   .env                        # copied from deployment/.env.prod
   data/prod/caddy/            # persistent ACME certs (must not wipe)
-  src/livekit/compose.yaml    # from backend (LiveKit config)
   fromchat.service            # systemd unit (classic deploy)
   updater/.env                # when updater selected
 ```

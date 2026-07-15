@@ -227,32 +227,6 @@ run_generate_compose() {
     fi
   fi
 
-  mkdir -p "${install_dir}/src/livekit"
-  if ${need_backend}; then
-    if [[ -n "${LOCAL_BACKEND_COMPOSE:-}" && -f "${LOCAL_BACKEND_COMPOSE}" ]]; then
-      local backend_root
-      backend_root="$(cd "$(dirname "${LOCAL_BACKEND_COMPOSE}")" && pwd)"
-      if [[ -f "${backend_root}/src/livekit/compose.yaml" ]]; then
-        cp -f "${backend_root}/src/livekit/compose.yaml" \
-          "${install_dir}/src/livekit/compose.yaml"
-      fi
-      if [[ -f "${backend_root}/src/haproxy.cfg" ]]; then
-        cp -f "${backend_root}/src/haproxy.cfg" \
-          "${install_dir}/src/haproxy.cfg"
-      fi
-    else
-      fetch_raw_file "${BACKEND_REPO}" "${tag}" "src/livekit/compose.yaml" \
-        "${install_dir}/src/livekit/compose.yaml" 2>/dev/null \
-        || fetch_raw_file "${BACKEND_REPO}" "main" "src/livekit/compose.yaml" \
-          "${install_dir}/src/livekit/compose.yaml"
-      fetch_raw_file "${BACKEND_REPO}" "${tag}" "src/haproxy.cfg" \
-        "${install_dir}/src/haproxy.cfg" 2>/dev/null \
-        || fetch_raw_file "${BACKEND_REPO}" "main" "src/haproxy.cfg" \
-          "${install_dir}/src/haproxy.cfg" 2>/dev/null \
-        || true
-    fi
-  fi
-
   local stack_csv
   stack_csv="$(echo "${components_csv}" | tr ',' '\n' | grep -v '^updater$' | paste -sd, - || true)"
   [[ -n "${stack_csv}" ]] || stack_csv="backend"

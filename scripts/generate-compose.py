@@ -18,7 +18,17 @@ import yaml
 
 
 FROMCHAT_IMAGE_SERVICES = frozenset(
-    {"backend", "messaging", "file_storage", "postgres", "web", "caddy", "updater"}
+    {
+        "backend",
+        "messaging",
+        "file_storage",
+        "postgres",
+        "web",
+        "caddy",
+        "updater",
+        "livekit",
+        "haproxy",
+    }
 )
 
 BACKEND_SERVICES = frozenset(
@@ -26,7 +36,9 @@ BACKEND_SERVICES = frozenset(
 )
 FRONTEND_SERVICES = frozenset({"web"})
 UPDATER_SERVICES = frozenset({"updater"})
-BACKEND_BUILD_SERVICES = frozenset({"backend", "messaging", "file_storage", "postgres", "caddy"})
+BACKEND_BUILD_SERVICES = frozenset(
+    {"backend", "messaging", "file_storage", "postgres", "caddy", "livekit", "haproxy"}
+)
 CADDY_STACK_SERVICES = frozenset({"caddy", "haproxy"})
 
 STRIP_KEYS = ("develop",)
