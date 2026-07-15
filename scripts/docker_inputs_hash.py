@@ -253,31 +253,129 @@ def _iter_files_under(path: Path) -> list[Path]:
     return files
 
 
-def _collect_sources(context: Path, dockerfile_path: Path) -> list[Path]:
+@dataclass(frozen=True)
+class StageInfo:
+    name: str
+    parent: str | None
+    copies: tuple[CopyAdd, ...]
+
+
+def _parse_from_stage(line: str, fallback_index: int) -> tuple[str, str | None]:
+    """Return (stage_name, parent_stage_or_none)."""
+    upper = line.upper()
+    if not upper.startswith("FROM "):
+        raise ValueError(line)
+    rest = line[5:].strip()
+    parts = rest.split()
+    if len(parts) >= 3 and parts[-2].upper() == "AS":
+        parent_token = " ".join(parts[:-2]).strip()
+        name = parts[-1]
+    elif len(parts) >= 1:
+        parent_token = parts[0]
+        name = f"stage{fallback_index}"
+    else:
+        name = f"stage{fallback_index}"
+        parent_token = ""
+
+    parent: str | None
+    if not parent_token or parent_token.lower() in (
+        "scratch",
+    ) or "/" in parent_token or ":" in parent_token:
+        # Image reference (python:3.12-slim) — not a stage alias.
+        parent = None
+    else:
+        parent = parent_token
+    return name, parent
+
+
+def _parse_stages(logical: list[str]) -> list[StageInfo]:
+    stages: list[StageInfo] = []
+    current_name: str | None = None
+    current_parent: str | None = None
+    current_copies: list[CopyAdd] = []
+    fallback_index = 0
+
+    def flush() -> None:
+        nonlocal current_name, current_parent, current_copies
+        if current_name is None:
+            return
+        stages.append(
+            StageInfo(
+                name=current_name,
+                parent=current_parent,
+                copies=tuple(current_copies),
+            )
+        )
+        current_copies = []
+
+    for ln in logical:
+        upper = ln.lstrip().upper()
+        if upper.startswith("FROM "):
+            flush()
+            current_name, current_parent = _parse_from_stage(ln, fallback_index)
+            fallback_index += 1
+            continue
+        parsed = _parse_copy_add(ln)
+        if parsed and not parsed.from_stage:
+            current_copies.append(parsed)
+
+    flush()
+    return stages
+
+
+def _stage_chain(stages: list[StageInfo], target: str | None) -> list[StageInfo]:
+    if not stages:
+        return []
+    by_name = {s.name: s for s in stages}
+    if not target:
+        return list(stages)
+
+    if target not in by_name:
+        return list(stages)
+
+    chain: list[StageInfo] = []
+    seen: set[str] = set()
+    name: str | None = target
+    while name and name not in seen:
+        seen.add(name)
+        stage = by_name.get(name)
+        if stage is None:
+            break
+        chain.append(stage)
+        name = stage.parent
+    chain.reverse()
+    return chain
+
+
+def _collect_sources(context: Path, dockerfile_path: Path, *, target: str | None = None) -> list[Path]:
     text = _read_text(dockerfile_path)
     logical = _dockerfile_logical_lines(text)
     dockerignore_rules = _read_dockerignore_rules(context)
+    stages = _parse_stages(logical)
+    active_stages = _stage_chain(stages, target)
 
     paths: list[Path] = []
-    for ln in logical:
-        parsed = _parse_copy_add(ln)
-        if not parsed:
-            continue
-        if parsed.from_stage:
-            continue
+    copies: list[CopyAdd] = []
+    if active_stages:
+        for stage in active_stages:
+            copies.extend(stage.copies)
+    else:
+        for ln in logical:
+            parsed = _parse_copy_add(ln)
+            if parsed and not parsed.from_stage:
+                copies.append(parsed)
+
+    for parsed in copies:
         for src in parsed.sources:
             if _looks_like_remote(src):
                 continue
             if src.startswith("/"):
-                # Absolute COPY sources aren't valid for local context; ignore to avoid surprises.
                 continue
-            # Docker allows ".", "./foo", etc.
             src_norm = src.lstrip("./")
             if src_norm == "":
                 src_norm = "."
 
             if _is_glob(src_norm):
-                # Expand within context
                 for root, _, filenames in os.walk(context):
                     root_p = Path(root)
                     rel_root = root_p.relative_to(context).as_posix()
@@ -290,7 +388,6 @@ def _collect_sources(context: Path, dockerfile_path: Path) -> list[Path]:
                 continue
 
             p = (context / src_norm).resolve()
-            # Ensure stays within context
             try:
                 p.relative_to(context.resolve())
             except Exception:
@@ -304,13 +401,17 @@ def _collect_sources(context: Path, dockerfile_path: Path) -> list[Path]:
                     continue
                 paths.append(fp)
 
-    # Always include the Dockerfile itself (and preserve stable ordering via sort later)
     paths.append(dockerfile_path.resolve())
     return paths
 
 
-def compute_inputs_hash(context: Path, dockerfile_path: Path) -> str:
-    files = _collect_sources(context=context, dockerfile_path=dockerfile_path)
+def compute_inputs_hash(
+    context: Path,
+    dockerfile_path: Path,
+    *,
+    target: str | None = None,
+) -> str:
+    files = _collect_sources(context=context, dockerfile_path=dockerfile_path, target=target)
     # Deduplicate by resolved path
     uniq: dict[str, Path] = {}
     for p in files:
@@ -344,11 +445,16 @@ def compute_inputs_hash(context: Path, dockerfile_path: Path) -> str:
     return h.hexdigest()
 
 
-def compute_inputs_debug(context: Path, dockerfile_path: Path) -> tuple[str, list[tuple[str, str]]]:
+def compute_inputs_debug(
+    context: Path,
+    dockerfile_path: Path,
+    *,
+    target: str | None = None,
+) -> tuple[str, list[tuple[str, str]]]:
     """
     Returns (inputs_hash, [(rel_path, sha256_of_file_contents), ...]) with dockerignore applied.
     """
-    files = _collect_sources(context=context, dockerfile_path=dockerfile_path)
+    files = _collect_sources(context=context, dockerfile_path=dockerfile_path, target=target)
     uniq: dict[str, Path] = {}
     for p in files:
         uniq[str(p.resolve())] = p.resolve()
@@ -371,13 +477,18 @@ def compute_inputs_debug(context: Path, dockerfile_path: Path) -> tuple[str, lis
         else:
             items.append((rp, "NONFILE"))
 
-    return compute_inputs_hash(context=context, dockerfile_path=dockerfile_path), items
+    return compute_inputs_hash(context=context, dockerfile_path=dockerfile_path, target=target), items
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--context", required=True, help="Build context directory")
     ap.add_argument("--dockerfile", required=True, help="Dockerfile path")
+    ap.add_argument(
+        "--target",
+        default="",
+        help="Dockerfile build target (multi-stage); only COPY steps for that stage chain are hashed",
+    )
     ap.add_argument(
         "--debug-list",
         action="store_true",
@@ -387,6 +498,7 @@ def main() -> int:
 
     context = Path(args.context).resolve()
     dockerfile = Path(args.dockerfile).resolve()
+    target = args.target.strip() or None
 
     if not context.exists() or not context.is_dir():
         print(f"Context not found or not a directory: {context}", file=sys.stderr)
@@ -396,12 +508,12 @@ def main() -> int:
         return 2
 
     if args.debug_list:
-        h, items = compute_inputs_debug(context=context, dockerfile_path=dockerfile)
+        h, items = compute_inputs_debug(context=context, dockerfile_path=dockerfile, target=target)
         for rp, sh in items:
             print(f"{rp}|{sh}", file=sys.stderr)
         print(h)
     else:
-        print(compute_inputs_hash(context=context, dockerfile_path=dockerfile))
+        print(compute_inputs_hash(context=context, dockerfile_path=dockerfile, target=target))
     return 0
 
 

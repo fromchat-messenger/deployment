@@ -216,7 +216,6 @@ def main() -> None:
                     deploy_resolved,
                     components=settings.components,
                     paths=paths,
-                    git_token=settings.git_token,
                 )
             if "backend" in stack:
                 deploy_resolved = transfer.sync_firebase_cert(creds, deploy_resolved)

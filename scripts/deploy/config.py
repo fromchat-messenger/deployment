@@ -17,7 +17,6 @@ from deploy.session_cache import (
     save_cached_settings,
     settings_to_cache,
 )
-from deploy.util import read_env_file_value
 import deploy.ui as ui
 
 
@@ -32,7 +31,6 @@ class DeploySettings:
     components: list[str]
     compose_components: list[str]
     tag: str
-    git_token: str | None
     paths: ProjectPaths
 
 
@@ -197,17 +195,6 @@ def load_settings(paths: ProjectPaths, argv: list[str]) -> DeploySettings:
     platform_arch = docker_platform.split("/", 1)[-1]
     use_docker_build = bool(host_arch and host_arch == platform_arch)
 
-    git_token: str | None = None
-    prod_env = paths.deploy_env_source()
-    if prod_env:
-        git_token = read_env_file_value(prod_env, "UPDATER_TOKEN") or None
-    if not git_token:
-        git_token = (
-            os.environ.get("UPDATER_TOKEN")
-            or os.environ.get("GIT_TOKEN")
-            or os.environ.get("GITHUB_TOKEN")
-        )
-
     if "backend" in components and not paths.backend_dir:
         sys.stderr.write(
             "Backend component selected but backend repo not found.\n"
@@ -243,7 +230,6 @@ def load_settings(paths: ProjectPaths, argv: list[str]) -> DeploySettings:
         components=components,
         compose_components=stack,
         tag=tag,
-        git_token=git_token,
         paths=paths,
     )
 

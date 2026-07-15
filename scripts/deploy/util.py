@@ -38,6 +38,10 @@ def read_cached_input_hash(cache_root: Path, image_ref: str) -> str:
     return read_file_if_exists(image_cache_dir(cache_root, image_ref) / "input.sha256").strip()
 
 
+def read_cached_layer_fp(cache_root: Path, image_ref: str, kind: str) -> str:
+    return read_file_if_exists(image_cache_dir(cache_root, image_ref) / f"{kind}.layer.sha256").strip()
+
+
 def write_image_cache_fields(cache_root: Path, image_ref: str, **fields: str) -> None:
     d = image_cache_dir(cache_root, image_ref)
     d.mkdir(parents=True, exist_ok=True)
@@ -96,10 +100,14 @@ def compute_inputs_hash(
     hash_script: Path,
     python_exe: str | None = None,
     extra_material: str = "",
+    target: str | None = None,
 ) -> str:
     exe = python_exe or sys.executable
+    cmd = [exe, str(hash_script), "--context", str(context), "--dockerfile", str(dockerfile)]
+    if target:
+        cmd.extend(["--target", target])
     p = subprocess.run(
-        [exe, str(hash_script), "--context", str(context), "--dockerfile", str(dockerfile)],
+        cmd,
         capture_output=True,
         text=True,
     )

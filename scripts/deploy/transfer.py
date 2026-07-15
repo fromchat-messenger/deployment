@@ -14,6 +14,7 @@ from deploy.ssh_auth import SshCredentials, scp_argv, ssh_argv, ssh_common_optio
 from deploy.util import (
     image_exists_locally,
     local_image_layer_fp,
+    read_cached_layer_fp,
     remote_image_layer_fp,
     write_image_cache_fields,
 )
@@ -188,16 +189,24 @@ class DeployTransfer:
     ) -> tuple[list[str], list[str]]:
         need: list[str] = []
         skip: list[str] = []
+        cache_root = self._paths.local_image_cache_dir
         for image in images:
             local_fp = local_image_layer_fp(image)
             if not local_fp:
                 need.append(image)
                 continue
+
+            cached_local = read_cached_layer_fp(cache_root, image, "local")
+            cached_remote = read_cached_layer_fp(cache_root, image, "remote")
+            if cached_local == local_fp and cached_remote == local_fp:
+                skip.append(image)
+                continue
+
             remote_fp = remote_image_layer_fp(creds.server, image)
             if remote_fp and remote_fp == local_fp:
                 skip.append(image)
                 write_image_cache_fields(
-                    self._paths.local_image_cache_dir,
+                    cache_root,
                     image,
                     **{
                         "local.layer.sha256": local_fp,
@@ -211,8 +220,11 @@ class DeployTransfer:
     def pussh_images(self, creds: SshCredentials, images: list[str]) -> None:
         if not images:
             return
-        need, _skip = self._images_needing_transfer(creds, images)
+        need, skip = self._images_needing_transfer(creds, images)
+        if skip:
+            ui.substep(f"Transfer cache hit — skipping: {', '.join(skip)}")
         if not need:
+            ui.success(f"All {len(skip)} image(s) already on server")
             return
         ui.step("Transferring images to server")
         self.ensure_unregistry(creds)

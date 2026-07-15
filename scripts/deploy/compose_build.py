@@ -107,9 +107,6 @@ class ComposeBuildPhase:
         if not isinstance(build, dict):
             return ""
         parts: list[str] = []
-        target = build.get("target")
-        if target:
-            parts.append(f"target={target}")
         args = build.get("args")
         if isinstance(args, dict):
             for key in sorted(args.keys()):
@@ -119,12 +116,20 @@ class ComposeBuildPhase:
                 parts.append(f"arg:{item}")
         return "\n".join(parts)
 
+    def _service_build_target(self, spec: dict) -> str | None:
+        build = spec.get("build")
+        if not isinstance(build, dict):
+            return None
+        target = build.get("target")
+        return str(target).strip() if target else None
+
     def _service_input_hash(self, context: Path, dockerfile: Path, spec: dict) -> str:
         return compute_inputs_hash(
             context,
             dockerfile,
             hash_script=self._paths.input_hash_script,
             extra_material=self._service_build_identity(spec),
+            target=self._service_build_target(spec),
         )
 
     def _partition_build_services(
@@ -186,7 +191,10 @@ class ComposeBuildPhase:
             ui.success("Build skipped (no services to build)")
             return []
 
-        need_build, _skip_build = self._partition_build_services(build_dir, services)
+        need_build, skip_build = self._partition_build_services(build_dir, services)
+
+        if skip_build:
+            ui.substep(f"Build cache hit — skipping: {', '.join(skip_build)}")
 
         if need_build:
             ui.step(f"Building {len(need_build)} image(s) via docker compose")
@@ -203,6 +211,8 @@ class ComposeBuildPhase:
                 ui.error("docker compose build failed")
                 sys.exit(1)
             ui.success(f"Build complete! {len(need_build)} image(s) built")
+        elif skip_build:
+            ui.success(f"Build skipped — {len(skip_build)} image(s) unchanged")
 
         compose = self.load_compose_json(build_dir, BUILD_COMPOSE_FILE)
         svc_map = compose.get("services") or {}

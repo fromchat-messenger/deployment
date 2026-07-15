@@ -172,11 +172,7 @@ def patch_updater_service(service: dict[str, Any], *, keep_build: bool) -> None:
         service.pop("volumes", None)
         return
     service["env_file"] = ["updater/.env", ".env"]
-    environment = service.get("environment")
-    if not isinstance(environment, dict):
-        environment = {}
-    environment["UPDATER_TOKEN"] = "${UPDATER_TOKEN}"
-    service["environment"] = environment
+    service.pop("environment", None)
     service["volumes"] = [
         "./compose.yml:/fromchat/compose.yml:rw",
         "/var/run/docker.sock:/var/run/docker.sock",
