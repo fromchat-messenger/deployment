@@ -192,7 +192,6 @@ def load_publish_settings(paths: ProjectPaths) -> dict[str, object] | None:
 def save_publish_settings(
     paths: ProjectPaths,
     *,
-    services: list[str],
     registries: list[str],
 ) -> None:
     d = secrets_dir(paths)
@@ -203,7 +202,6 @@ def save_publish_settings(
         pass
     payload = {
         "version": PUBLISH_SETTINGS_VERSION,
-        "services": services,
         "registries": registries,
     }
     path = publish_settings_file(paths)
@@ -212,7 +210,7 @@ def save_publish_settings(
         path.chmod(0o600)
     except OSError:
         pass
-    ui.substep(f"Saved publish choices → {path.relative_to(paths.deployment_root)}")
+    ui.substep(f"Saved registry choices → {path.relative_to(paths.deployment_root)}")
 
 
 def _load_compose(path: Path) -> dict:
@@ -368,13 +366,22 @@ def parse_services_csv(raw: str, allowed: set[str]) -> list[str]:
     return out
 
 
-def list_all_services(specs: list[ImageSpec]) -> list[str]:
+def prompt_services_interactive(specs: list[ImageSpec]) -> list[str]:
+    """Ask which images to publish. Selection is not persisted."""
     ui.step("Services to publish")
-    names: list[str] = []
+    ui.info("Not remembered — select every time (or pass --services).")
+    selected: list[str] = []
     for spec in specs:
-        ui.substep(f"{spec.service} ({spec.repo_root.name})")
-        names.append(spec.service)
-    return names
+        label = f"{spec.service} ({spec.repo_root.name})"
+        if _confirm(f"Publish {label}?", default=True):
+            selected.append(spec.service)
+            ui.substep(f"include → {spec.service}")
+        else:
+            ui.substep(f"skip → {spec.service}")
+    if not selected:
+        ui.error("No services selected.")
+        raise SystemExit(1)
+    return selected
 
 
 def git_tag_at_head(repo: Path) -> str:
@@ -1236,12 +1243,13 @@ def _parse_args(argv: list[str]) -> argparse.Namespace:
             "GitHub Packages + Gitea (Docker Hub optional). "
             "Discovers publishable services from compose build blocks. "
             "Image tags match each repo's git tag on HEAD. "
-            f"Choices are saved under {SECRETS_DIRNAME}/{PUBLISH_SETTINGS_FILENAME}."
+            "On a TTY, asks which services to publish (not saved). "
+            f"Registry choices are saved under {SECRETS_DIRNAME}/{PUBLISH_SETTINGS_FILENAME}."
         )
     )
     ap.add_argument(
         "--services",
-        help="Comma-separated compose service names (interactive if omitted on a TTY)",
+        help="Comma-separated compose service names (skip interactive service prompt)",
     )
     ap.add_argument(
         "--push",
@@ -1319,7 +1327,7 @@ def _run(argv: list[str] | None = None) -> None:
     ui.info("Tags come from each source repo's git tag on HEAD.")
     ui.info("Default registries: GitHub Packages + Gitea.")
     if saved:
-        ui.info(f"Loaded saved choices from {SECRETS_DIRNAME}/{PUBLISH_SETTINGS_FILENAME}")
+        ui.info(f"Loaded saved registry choices from {SECRETS_DIRNAME}/{PUBLISH_SETTINGS_FILENAME}")
 
     all_specs = discover_image_specs(paths)
     allowed = {s.service for s in all_specs}
@@ -1327,9 +1335,13 @@ def _run(argv: list[str] | None = None) -> None:
     if args.services:
         selected_names = parse_services_csv(args.services, allowed)
     elif sys.stdin.isatty() and sys.stdout.isatty():
-        selected_names = list_all_services(all_specs)
+        selected_names = prompt_services_interactive(all_specs)
     else:
-        selected_names = [s.service for s in all_specs]
+        ui.error(
+            "No TTY for service selection. Pass --services=name1,name2 "
+            f"(available: {', '.join(sorted(allowed))})."
+        )
+        raise SystemExit(1)
 
     specs = [s for s in all_specs if s.service in selected_names]
 
@@ -1379,7 +1391,7 @@ def _run(argv: list[str] | None = None) -> None:
 
     bind_repos_after_push(specs, sorted(pushed_any), creds_map)
 
-    save_publish_settings(paths, services=selected_names, registries=push_desired)
+    save_publish_settings(paths, registries=push_desired)
 
     ui.success("Publish complete" if args.no_build else "Publish build complete")
     if pushed_any:
