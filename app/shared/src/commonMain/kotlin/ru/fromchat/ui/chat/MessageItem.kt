@@ -514,6 +514,9 @@ fun MessageItem(
                         pendingIsImage ||
                             message.files?.firstOrNull()?.let { isImageFilename(it.name) } == true
                     )
+                    val hasImageCaption =
+                        message.content.isNotBlank() &&
+                        !isFilenameOnlyMessageCaption(message)
 
                     val bubbleBodyGestures =
                         if (isContextMenuOpen) Modifier
@@ -812,6 +815,7 @@ fun MessageItem(
                                                     messageLabel = message.content,
                                                     onCancelUpload = onCancelUpload,
                                                     messageGroup = group,
+                                                    expandToBubbleWidth = hasImageCaption,
                                                     modifier = if (firstContentIsImage) {
                                                         Modifier.padding(all = 2.dp)
                                                     } else {
@@ -941,6 +945,8 @@ fun MessageItem(
                                                     messageLabel = message.content,
                                                     onCancelUpload = onCancelUpload,
                                                     messageGroup = group,
+                                                    expandToBubbleWidth =
+                                                        isImage && hasImageCaption,
                                                     modifier = if (
                                                         isFirstImage &&
                                                         firstContentIsImage &&

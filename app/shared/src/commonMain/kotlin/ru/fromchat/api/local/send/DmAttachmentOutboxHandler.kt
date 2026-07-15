@@ -60,7 +60,9 @@ object DmAttachmentOutboxHandler {
             .executeAsOneOrNull() != null
 
     private fun ensureStillQueued(instanceId: String, clientMessageId: String) {
-        if (!outboxRowExists(instanceId, clientMessageId)) {
+        if (OutgoingMessageCoordinator.isOutboundCancelled(clientMessageId) ||
+            !outboxRowExists(instanceId, clientMessageId)
+        ) {
             AttachmentMediaLog.upload("cancelled_in_flight", "job" to clientMessageId)
             throw kotlinx.coroutines.CancellationException("Upload cancelled")
         }
@@ -72,6 +74,8 @@ object DmAttachmentOutboxHandler {
         val payload = json.decodeFromString<DmAttachmentOutboxPayload>(row.payloadJson)
         val clientMessageId = payload.clientMessageId.trim()
         if (clientMessageId.isEmpty() || payload.recipientId <= 0) return true
+        if (OutgoingMessageCoordinator.isOutboundCancelled(clientMessageId)) return true
+        if (OutgoingMessageCoordinator.isOutboundPaused(clientMessageId)) return true
         if (!outboxRowExists(instanceId, clientMessageId)) return true
 
         val conversationId = row.conversationId.ifBlank {
@@ -168,6 +172,13 @@ object DmAttachmentOutboxHandler {
                     serverUploadId = serverUploadId,
                 )
             }
+            if (
+                OutgoingMessageCoordinator.isOutboundCancelled(clientMessageId) ||
+                !outboxRowExists(instanceId, clientMessageId)
+            ) {
+                OutgoingMessageCoordinator.abortDmServerUploadIfNeeded(serverUploadId[0])
+                return@runCatching true
+            }
             ensureStillQueued(instanceId, clientMessageId)
 
             clearPrepared(instanceId, clientMessageId)
@@ -183,6 +194,7 @@ object DmAttachmentOutboxHandler {
                     bytesUploaded = row.bytesUploaded,
                 )
             }
+            OutgoingMessageCoordinator.clearOutboundCancelled(clientMessageId)
             AttachmentUploadNotifier.emit(
                 AttachmentUploadProgress.Success(clientMessageId),
                 messageLabel = payload.plaintext,
@@ -221,6 +233,10 @@ object DmAttachmentOutboxHandler {
                 ),
                 messageLabel = payload.plaintext,
             )
+            if (failureKey == UPLOAD_ERROR_FILE_TOO_LARGE || error.isOutboundPermanentFailure()) {
+                OutgoingMessageCoordinator.markOutboundPaused(clientMessageId)
+                return true
+            }
             false
         }
     }

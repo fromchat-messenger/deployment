@@ -2,12 +2,16 @@ package ru.fromchat.api.local.send
 
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import kotlin.coroutines.coroutineContext
 import kotlinx.serialization.json.Json
 import ru.fromchat.api.ApiClient
 import ru.fromchat.api.local.workers.AttachmentUploadNotifier
@@ -40,6 +44,35 @@ object OutgoingMessageCoordinator {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
     private val drainMutex = Mutex()
     private val drainScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val retryJobs = mutableMapOf<String, Job>()
+    /** Client message ids cancelled by the user; in-flight sends must not confirm locally. */
+    private val cancelledClientIds = MutableStateFlow<Set<String>>(emptySet())
+    /** Permanent failures that must not auto-retry until [retryOutboundMessage] / [retryDmAttachmentUpload]. */
+    private val pausedClientIds = MutableStateFlow<Set<String>>(emptySet())
+
+    fun isOutboundCancelled(clientMessageId: String): Boolean =
+        clientMessageId.trim() in cancelledClientIds.value
+
+    fun isOutboundPaused(clientMessageId: String): Boolean =
+        clientMessageId.trim() in pausedClientIds.value
+
+    fun markOutboundPaused(clientMessageId: String) {
+        val cid = clientMessageId.trim()
+        if (cid.isEmpty()) return
+        pausedClientIds.update { it + cid }
+    }
+
+    fun clearOutboundPaused(clientMessageId: String) {
+        val cid = clientMessageId.trim()
+        if (cid.isEmpty()) return
+        pausedClientIds.update { it - cid }
+    }
+
+    fun clearOutboundCancelled(clientMessageId: String) {
+        val cid = clientMessageId.trim()
+        if (cid.isEmpty()) return
+        cancelledClientIds.update { it - cid }
+    }
 
     /** Called when network or WebSocket transport is ready; drains pending outbox rows. */
     fun onTransportReady() {
@@ -47,9 +80,18 @@ object OutgoingMessageCoordinator {
     }
 
     private fun scheduleOutboxRetry(instanceId: String) {
-        drainScope.launch {
+        val id = instanceId.trim()
+        if (id.isEmpty()) return
+        retryJobs[id]?.cancel()
+        retryJobs[id] = drainScope.launch {
             delay(3_000)
-            drainOutboxForInstance(instanceId)
+            try {
+                drainOutboxForInstance(id)
+            } finally {
+                if (retryJobs[id] == coroutineContext[Job]) {
+                    retryJobs.remove(id)
+                }
+            }
         }
     }
 
@@ -157,6 +199,7 @@ object OutgoingMessageCoordinator {
     ) {
         val instanceId = CacheContext.requireActiveInstanceId()
         val conversationId = conversationIdForGroup(GENERAL_PUBLIC_GROUP_ID)
+        markOutboundActive(clientMessageId)
         withContext(Dispatchers.Default) {
             MessageRepository.upsertPublicMessage(optimisticMessage)
             Logger.d("OutgoingMessageCoordinator", "enqueuePublicMessage: clientId=${clientMessageId.take(12)} contentLen=${content.length}")
@@ -186,6 +229,7 @@ object OutgoingMessageCoordinator {
     ) {
         val instanceId = CacheContext.requireActiveInstanceId()
         val conversationId = conversationIdForDm(recipientId)
+        markOutboundActive(clientMessageId)
         withContext(Dispatchers.Default) {
             MessageRepository.upsertDmMessage(recipientId, optimisticMessage)
             val outboundPlaintext = buildDmOutboundPlaintext(plaintext, replyToId)
@@ -226,6 +270,7 @@ object OutgoingMessageCoordinator {
     ) {
         val instanceId = CacheContext.requireActiveInstanceId()
         val conversationId = conversationIdForDm(recipientId)
+        markOutboundActive(clientMessageId)
         AttachmentUploadNotifier.emit(
             AttachmentUploadProgress.Pending(clientMessageId, filename),
             messageLabel = plaintext,
@@ -275,6 +320,7 @@ object OutgoingMessageCoordinator {
     ) {
         val instanceId = CacheContext.requireActiveInstanceId()
         val conversationId = conversationIdForGroup(GENERAL_PUBLIC_GROUP_ID)
+        markOutboundActive(clientMessageId)
         AttachmentUploadNotifier.emit(
             AttachmentUploadProgress.Pending(clientMessageId, filename),
             messageLabel = content,
@@ -358,6 +404,8 @@ object OutgoingMessageCoordinator {
         if (cid.isEmpty()) return
         val instanceId = CacheContext.activeInstanceId.value.trim()
         if (instanceId.isEmpty()) return
+        clearOutboundPaused(cid)
+        clearOutboundCancelled(cid)
         drainScope.launch {
             withContext(Dispatchers.Default) {
                 MessageCacheStore.clearSendFailed(conversationId, cid)
@@ -373,6 +421,8 @@ object OutgoingMessageCoordinator {
         if (cid.isEmpty()) return
         val instanceId = CacheContext.activeInstanceId.value.trim()
         if (instanceId.isEmpty()) return
+        clearOutboundPaused(cid)
+        clearOutboundCancelled(cid)
         AttachmentMediaLog.upload("retry_requested", "job" to cid)
         kickOutboxDrain(instanceId)
     }
@@ -382,6 +432,8 @@ object OutgoingMessageCoordinator {
         val cid = clientMessageId.trim()
         if (cid.isEmpty()) return
         val instanceId = CacheContext.requireActiveInstanceId()
+        cancelledClientIds.update { it + cid }
+        clearOutboundPaused(cid)
         AttachmentMediaLog.upload("cancel_requested", "job" to cid, "conv" to conversationId)
         withContext(Dispatchers.Default) {
             val row = MessageDatabaseProvider.database.messageDatabaseQueries
@@ -404,7 +456,14 @@ object OutgoingMessageCoordinator {
         AttachmentUploadNotifier.emit(
             AttachmentUploadProgress.Failed(cid, "Cancelled"),
         )
-        kickOutboxDrain(instanceId)
+        // Do not kick drain — a concurrent in-flight send must observe cancel via outbox/flags only.
+    }
+
+    private fun markOutboundActive(clientMessageId: String) {
+        val cid = clientMessageId.trim()
+        if (cid.isEmpty()) return
+        clearOutboundCancelled(cid)
+        clearOutboundPaused(cid)
     }
 
     /** Drains pending outbox rows for the active instance (shared by workers and iOS). */

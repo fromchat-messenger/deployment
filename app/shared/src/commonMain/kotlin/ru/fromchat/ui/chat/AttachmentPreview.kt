@@ -155,6 +155,8 @@ fun AttachmentPreview(
         hasSameAuthorAbove = false,
         hasSameAuthorBelow = false,
     ),
+    /** When true, grow the tile to the bubble width (e.g. caption text is wider). */
+    expandToBubbleWidth: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val isImage = when {
@@ -221,9 +223,10 @@ fun AttachmentPreview(
                             Modifier
                         }
                     )
-                    // Explicit px size from dp max + aspect — do not wrap to thumb intrinsics
-                    // (IntrinsicSize.Max bubbles otherwise shrink to ~80px ≈ 3× too small).
-                    .attachmentTileLayout(aspectRatio = effectiveAspect)
+                    .attachmentTileLayout(
+                        aspectRatio = effectiveAspect,
+                        expandToBubbleWidth = expandToBubbleWidth,
+                    )
                     .clip(attachmentImageCornerShape(isAuthor, messageGroup))
                     .then(
                         if (onImageBounds != null && showImageTile) {
@@ -243,7 +246,7 @@ fun AttachmentPreview(
                             Modifier
                         }
                     ),
-                contentAlignment = Alignment.Center
+                contentAlignment = Alignment.Center,
             ) {
                 Box(
                     modifier = Modifier

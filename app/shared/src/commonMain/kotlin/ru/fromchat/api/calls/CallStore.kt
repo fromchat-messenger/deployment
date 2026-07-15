@@ -33,7 +33,6 @@ sealed class CallUiState {
         val fromUserId: Int,
         val fromUsername: String,
         val roomName: String,
-        val serverUrl: String,
     ) : CallUiState()
 
     data class InCall(
@@ -101,9 +100,8 @@ object CallStore {
             }
             return
         }
-        val serverUrl = obj["serverUrl"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
         val roomName = obj["roomName"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() }
-        if (serverUrl == null || roomName == null || fromUserId == null) return
+        if (roomName == null || fromUserId == null) return
         if (fromUserId == currentId) return
         if (!ServerConfig.callsEnabled) {
             Logger.d(TAG, "call_signaling invite ignored (calls disabled in server config)")
@@ -116,7 +114,6 @@ object CallStore {
             fromUserId = fromUserId,
             fromUsername = fromUsername,
             roomName = roomName,
-            serverUrl = serverUrl,
         )
     }
 
@@ -132,13 +129,10 @@ object CallStore {
             runCatching {
                 withContext(Dispatchers.Default) {
                     val tok = ApiClient.fetchLiveKitToken(peerUserId, null)
-                    // LiveKit WS endpoint is exposed on the same host as the server config,
-                    // using the configured calls port.
-                    val signalUrl = ServerConfig.liveKitWsUrl()
-                    ApiClient.sendLiveKitInvite(peerUserId, tok.roomName, signalUrl)
+                    ApiClient.sendLiveKitInvite(peerUserId, tok.roomName)
                     val label = peerLabel(peerUserId)
                     LiveKitConnectSession(
-                        serverUrl = signalUrl,
+                        serverUrl = ServerConfig.liveKitWsUrl(),
                         token = tok.token,
                         peerUserId = peerUserId,
                         peerDisplayName = label,

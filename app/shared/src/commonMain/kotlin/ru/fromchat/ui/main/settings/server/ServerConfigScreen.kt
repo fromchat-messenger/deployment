@@ -533,7 +533,7 @@ fun ServerConfigScreen() {
                                                 overflow = TextOverflow.Ellipsis
                                             )
                                         },
-                                        placeholder = { Text("8301") },
+                                        placeholder = { Text("8300") },
                                         modifier = Modifier
                                             .fillMaxWidth()
                                             .trackLazyListFocus(

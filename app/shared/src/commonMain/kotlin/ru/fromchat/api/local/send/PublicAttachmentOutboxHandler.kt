@@ -21,7 +21,10 @@ import ru.fromchat.api.local.db.store.MessageDatabaseProvider
 import ru.fromchat.api.local.messages.optimisticMessageIdForClientMessageId
 import ru.fromchat.api.local.workers.AttachmentUploadNotifier
 import ru.fromchat.api.local.workers.AttachmentUploadProgress
-import ru.fromchat.api.local.db.isPlaceholderAttachmentAspectRatio
+import ru.fromchat.api.local.send.isOutboundPermanentFailure
+import ru.fromchat.api.local.send.isOutboundTransientFailure
+import ru.fromchat.api.local.send.outboundFailureErrorKey
+import ru.fromchat.api.local.send.SEND_ERROR_FAILED
 import ru.fromchat.api.local.db.isPlaceholderAttachmentDimensions
 import ru.fromchat.api.schema.messages.publicchat.resolvePublicAttachmentLayout
 import ru.fromchat.api.schema.messages.publicchat.upload.PublicUploadCompleteResponse
@@ -29,6 +32,7 @@ import ru.fromchat.db.Outbox
 import ru.fromchat.ui.chat.isImageFilename
 
 private const val DEFAULT_CHUNK_SIZE = 262_144
+private const val MAX_ATTACHMENT_OUTBOX_ATTEMPTS = 5L
 
 object PublicAttachmentOutboxHandler {
     private val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
@@ -39,7 +43,9 @@ object PublicAttachmentOutboxHandler {
             .executeAsOneOrNull() != null
 
     private fun ensureStillQueued(instanceId: String, clientMessageId: String) {
-        if (!outboxRowExists(instanceId, clientMessageId)) {
+        if (OutgoingMessageCoordinator.isOutboundCancelled(clientMessageId) ||
+            !outboxRowExists(instanceId, clientMessageId)
+        ) {
             AttachmentMediaLog.upload("cancelled_in_flight", "job" to clientMessageId)
             throw kotlinx.coroutines.CancellationException("Upload cancelled")
         }
@@ -51,6 +57,8 @@ object PublicAttachmentOutboxHandler {
         val payload = json.decodeFromString<PublicAttachmentOutboxPayload>(row.payloadJson)
         val clientMessageId = payload.clientMessageId.trim()
         if (clientMessageId.isEmpty()) return true
+        if (OutgoingMessageCoordinator.isOutboundCancelled(clientMessageId)) return true
+        if (OutgoingMessageCoordinator.isOutboundPaused(clientMessageId)) return true
         if (!outboxRowExists(instanceId, clientMessageId)) return true
 
         val conversationId = row.conversationId
@@ -130,6 +138,21 @@ object PublicAttachmentOutboxHandler {
                 clientMessageId = clientMessageId,
                 uploadedFileIds = listOf(completed.fileId),
             )
+            if (
+                OutgoingMessageCoordinator.isOutboundCancelled(clientMessageId) ||
+                !outboxRowExists(instanceId, clientMessageId)
+            ) {
+                AttachmentMediaLog.send(
+                    "outbox_send_aborted_after_cancel",
+                    "job" to clientMessageId.take(12),
+                    "realId" to confirmed.id,
+                )
+                if (confirmed.id > 0) {
+                    runCatching { ApiClient.deleteMessage(confirmed.id) }
+                }
+                OutgoingMessageCoordinator.abortPublicServerUploadIfNeeded(completed.fileId)
+                return@runCatching true
+            }
             val resolvedConfirmed = mergeConfirmedPublicAttachment(
                 confirmed = confirmed.copy(client_message_id = clientMessageId),
                 payload = stagedPayload,
@@ -171,6 +194,7 @@ object PublicAttachmentOutboxHandler {
                     bytesUploaded = row.bytesUploaded,
                 )
             }
+            OutgoingMessageCoordinator.clearOutboundCancelled(clientMessageId)
             AttachmentUploadNotifier.emit(
                 AttachmentUploadProgress.Success(clientMessageId),
                 messageLabel = payload.content,
@@ -221,16 +245,79 @@ object PublicAttachmentOutboxHandler {
                     ),
                     messageLabel = payload.content,
                 )
-            } else {
-                // Transient (network / parse / 5xx): keep uploading UI and retry — do not flash failed.
+                OutgoingMessageCoordinator.markOutboundPaused(clientMessageId)
+                return true
+            }
+            if (error.isOutboundPermanentFailure()) {
+                val errorKey = outboundFailureErrorKey(error)
+                AttachmentUploadNotifier.emit(
+                    AttachmentUploadProgress.Failed(
+                        jobId = clientMessageId,
+                        error = errorKey,
+                    ),
+                    messageLabel = payload.content,
+                )
+                withContext(Dispatchers.Default) {
+                    MessageCacheStore.markSendFailed(conversationId, clientMessageId)
+                }
+                OutgoingMessageCoordinator.markOutboundPaused(clientMessageId)
+                return true
+            }
+            if (error.isOutboundTransientFailure()) {
                 AttachmentMediaLog.send(
                     "outbox_retryable",
                     "job" to clientMessageId.take(12),
                     "err" to (error.message ?: error::class.simpleName),
                 )
             }
+            if (scheduleRetryOrStop(instanceId, row, conversationId, payload.content)) {
+                return true
+            }
             false
         }
+    }
+
+    private suspend fun scheduleRetryOrStop(
+        instanceId: String,
+        row: Outbox,
+        conversationId: String,
+        messageLabel: String,
+    ): Boolean {
+        if (!outboxRowExists(instanceId, row.clientMessageId)) return true
+        val nextRetry = row.retryCount + 1L
+        if (nextRetry >= MAX_ATTACHMENT_OUTBOX_ATTEMPTS) {
+            AttachmentMediaLog.send(
+                "outbox_give_up",
+                "job" to row.clientMessageId.take(12),
+                "attempts" to nextRetry,
+            )
+            AttachmentUploadNotifier.emit(
+                AttachmentUploadProgress.Failed(
+                    jobId = row.clientMessageId,
+                    error = SEND_ERROR_FAILED,
+                ),
+                messageLabel = messageLabel,
+            )
+            withContext(Dispatchers.Default) {
+                MessageCacheStore.markSendFailed(conversationId, row.clientMessageId)
+            }
+            OutgoingMessageCoordinator.markOutboundPaused(row.clientMessageId)
+            return true
+        }
+        withContext(Dispatchers.Default) {
+            if (!outboxRowExists(instanceId, row.clientMessageId)) return@withContext
+            MessageDatabaseProvider.database.messageDatabaseQueries.upsertOutbox(
+                instanceId = instanceId,
+                clientMessageId = row.clientMessageId,
+                conversationId = row.conversationId,
+                kind = row.kind,
+                payloadJson = row.payloadJson,
+                retryCount = nextRetry,
+                nextAttemptAt = row.nextAttemptAt,
+                bytesUploaded = row.bytesUploaded,
+            )
+        }
+        return false
     }
 
     private suspend fun sendResumable(

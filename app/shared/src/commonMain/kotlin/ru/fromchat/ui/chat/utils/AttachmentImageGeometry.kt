@@ -1,12 +1,12 @@
 package ru.fromchat.ui.chat.utils
 
-import androidx.compose.foundation.layout.requiredSize
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.remember
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.layout.layout
+import androidx.compose.ui.unit.Constraints
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
+import kotlin.math.roundToInt
 import ru.fromchat.api.local.cache.DecryptedImageCache
 import ru.fromchat.api.local.db.aspectRatioFromDimensionPair
 import ru.fromchat.api.local.db.isPlaceholderAttachmentAspectRatio
@@ -69,17 +69,46 @@ internal fun computeAttachmentTileSize(
     return width to height
 }
 
-@Composable
+/**
+ * Fixed or bubble-filling attachment tile.
+ *
+ * Default size is capped at [maxWidth]×[maxHeight]. When [expandToBubbleWidth] is true and the
+ * parent (typically [IntrinsicSize.Max] bubble) offers a wider exact width, the tile grows to
+ * that width with proportional height and no height cap.
+ *
+ * Uses a plain [layout] modifier — not BoxWithConstraints — so it stays valid inside
+ * IntrinsicSize parents.
+ */
 internal fun Modifier.attachmentTileLayout(
     aspectRatio: Float?,
     maxWidth: Dp = ATTACHMENT_TILE_MAX_WIDTH,
     maxHeight: Dp = ATTACHMENT_TILE_MAX_HEIGHT,
+    expandToBubbleWidth: Boolean = false,
 ): Modifier {
     val ratio = aspectRatio?.takeIf { it.isFinite() && it > 0f } ?: 1f
-    val (width, height) = remember(ratio, maxWidth, maxHeight) {
-        computeAttachmentTileSize(ratio, maxWidth, maxHeight)
+    val (cappedW, cappedH) = computeAttachmentTileSize(ratio, maxWidth, maxHeight)
+    return this.layout { measurable, constraints ->
+        val cappedWpx = cappedW.roundToPx().coerceAtLeast(1)
+        val cappedHpx = cappedH.roundToPx().coerceAtLeast(1)
+        val boundedMax = constraints.maxWidth
+        val width: Int
+        val height: Int
+        if (
+            expandToBubbleWidth &&
+            boundedMax != Constraints.Infinity &&
+            boundedMax > cappedWpx
+        ) {
+            width = boundedMax
+            height = (width / ratio).roundToInt().coerceAtLeast(1)
+        } else {
+            width = cappedWpx
+            height = cappedHpx
+        }
+        val placeable = measurable.measure(Constraints.fixed(width, height))
+        layout(width, height) {
+            placeable.placeRelative(0, 0)
+        }
     }
-    return this.requiredSize(width, height)
 }
 
 /** Inner clip: top corners follow bubble minus inset; bottom corners lightly rounded. */

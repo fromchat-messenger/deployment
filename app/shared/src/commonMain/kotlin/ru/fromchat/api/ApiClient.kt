@@ -854,10 +854,9 @@ object ApiClient {
     }
 
     /**
-     * Fetch encrypted file bytes. Path examples:
-     * - absolute URL like "http://..." -> returned as-is
-     * - "/uploads/files/encrypted/xxx.jpg" -> returned as <apiBaseUrl>/uploads/...
-     * - "/api/uploads/..." -> strip legacy `/api` prefix, then combine with apiBaseUrl
+     * Resolve an attachment path to a full URL.
+     * Absolute `http(s)://…` URLs are returned as-is; relative paths are joined to [ServerConfig.apiBaseUrl].
+     * Leading `/api` is stripped so paths match the backend (legacy payloads still used `/api/uploads/...`).
      */
     fun encryptedFileUrl(path: String): String {
         if (path.startsWith("http")) return path
@@ -1590,6 +1589,9 @@ object ApiClient {
 
     suspend fun deleteMessage(messageId: Int) {
         if (_suspensionState.value.isSuspended) return
+        runCatching {
+            http.delete("${ServerConfig.apiBaseUrl}/delete_message/$messageId")
+        }
         WebSocketManager.send(
             WebSocketMessage(
                 type = "deleteMessage",
@@ -1729,7 +1731,7 @@ object ApiClient {
             .body()
     }
 
-    suspend fun sendLiveKitInvite(toUserId: Int, roomName: String, serverUrl: String) {
+    suspend fun sendLiveKitInvite(toUserId: Int, roomName: String) {
         if (_suspensionState.value.isSuspended) return
         WebSocketManager.send(
             WebSocketMessage(
@@ -1742,7 +1744,6 @@ object ApiClient {
                     CallSignalingLiveKitPayload(
                         toUserId = toUserId,
                         roomName = roomName,
-                        serverUrl = serverUrl,
                     ),
                 ),
             ),

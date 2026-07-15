@@ -87,7 +87,7 @@ private fun AnnotatedString.linkAt(offset: Int): AnnotatedString.Range<LinkAnnot
 }
 
 private val LEGAL_STATIC_LINK_RE = Regex(
-    pattern = """(?:^|/)?(?:api/)?static/(TERMS|PRIVACY)\.md$""",
+    pattern = """(?:^|/)?static/(TERMS|PRIVACY)\.md$""",
     option = RegexOption.IGNORE_CASE,
 )
 

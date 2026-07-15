@@ -6,5 +6,4 @@ import kotlinx.serialization.Serializable
 data class CallSignalingLiveKitPayload(
     val toUserId: Int,
     val roomName: String,
-    val serverUrl: String,
 )
