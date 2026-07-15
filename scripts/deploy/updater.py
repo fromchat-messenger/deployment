@@ -138,4 +138,4 @@ def setup_updater_remote(
             print(f"    {line}")
         raise SystemExit(1)
 
-    ui.success("Updater env synced (started with main stack via systemd)")
+    ui.success("Updater env synced (included in compose stack)")

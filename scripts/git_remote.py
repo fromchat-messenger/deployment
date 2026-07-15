@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import re
+import ssl
 import sys
 import urllib.error
 import urllib.parse
@@ -31,6 +32,41 @@ OFFICIAL_GITHUB_REPOS = frozenset(
         f"https://github.com/{GITHUB_ORG}/app.git",
     }
 )
+
+
+class GitRemoteUnavailableError(OSError):
+    """GitHub and/or Gitea could not provide release metadata."""
+
+    def __init__(
+        self,
+        repo_label: str,
+        *,
+        github_error: Exception | None = None,
+        gitea_error: Exception | None = None,
+    ) -> None:
+        self.repo_label = repo_label
+        self.github_error = github_error
+        self.gitea_error = gitea_error
+        details: list[str] = []
+        if github_error is not None:
+            details.append(f"GitHub: {_brief_http_error(github_error)}")
+        if gitea_error is not None:
+            details.append(f"Gitea: {_brief_http_error(gitea_error)}")
+        detail_text = "; ".join(details) if details else "service unavailable"
+        super().__init__(f"Release metadata unavailable for {repo_label} ({detail_text})")
+
+
+def _brief_http_error(exc: Exception) -> str:
+    if isinstance(exc, urllib.error.HTTPError):
+        return f"HTTP {exc.code}"
+    if isinstance(exc, urllib.error.URLError):
+        reason = exc.reason
+        if isinstance(reason, ssl.SSLError):
+            return f"SSL {reason.reason}"
+        if reason is not None:
+            return str(reason)
+        return "connection failed"
+    return type(exc).__name__
 
 
 def normalize_repo_url(url: str) -> str:
@@ -236,11 +272,17 @@ def fetch_semver_tags(repo_url: str, token: str | None = None) -> set[str]:
 
     if is_gitea_repo(repo_url):
         gitea_owner, gitea_repo = gitea_owner_repo(owner, repo)
-        return _tags_from_gitea(gitea_owner, gitea_repo, token)
+        try:
+            return _tags_from_gitea(gitea_owner, gitea_repo, token)
+        except Exception as err:
+            raise GitRemoteUnavailableError(
+                f"git.fromchat.ru/{gitea_owner}/{gitea_repo}",
+                gitea_error=err,
+            ) from err
 
     try:
         return _tags_from_github(owner, repo, token)
-    except Exception as err:
+    except Exception as github_err:
         if not is_official_github_repo(repo_url):
             raise
         gitea_owner, gitea_repo = gitea_owner_repo(owner, repo)
@@ -249,7 +291,14 @@ def fetch_semver_tags(repo_url: str, token: str | None = None) -> set[str]:
             f"trying git.fromchat.ru/{gitea_owner}/{gitea_repo}…",
             file=sys.stderr,
         )
-        return _tags_from_gitea(gitea_owner, gitea_repo, token)
+        try:
+            return _tags_from_gitea(gitea_owner, gitea_repo, token)
+        except Exception as gitea_err:
+            raise GitRemoteUnavailableError(
+                f"{owner}/{repo}",
+                github_error=github_err,
+                gitea_error=gitea_err,
+            ) from gitea_err
 
 
 def semver_key(tag: str) -> tuple[int, ...]:

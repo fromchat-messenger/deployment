@@ -52,4 +52,6 @@ cd deployment
 ./deploy.sh user@host ~/fromchat-server linux/arm64 --tag latest
 ```
 
+Syncs `compose.yml` + `.env` to the server, pushes images via `docker pussh`, then runs `docker compose up -d` remotely (containers use `restart: always` — no systemd unit).
+
 Publish multi-arch images with `./publish.sh`. CI regenerates root `compose.yml` from the latest published release.

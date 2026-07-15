@@ -1,4 +1,4 @@
-"""Image pussh, rsync deployment layout, Firebase cert, remote systemd."""
+"""Image pussh, rsync deployment layout, Firebase cert, remote docker compose."""
 
 from __future__ import annotations
 
@@ -24,7 +24,7 @@ PUSSH_PLUGIN_URL = (
     "https://raw.githubusercontent.com/psviderski/unregistry/main/docker-pussh"
 )
 
-REMOTE_SYSTEMD_SCRIPT = r"""set -e
+REMOTE_COMPOSE_UP_SCRIPT = r"""set -e
 
 REMOTE_SUDO_PASS="${SUDO_PASSWORD:-}"
 REMOTE_DEPLOY_PATH="${DEPLOY_PATH:-}"
@@ -63,26 +63,29 @@ if [ ! -f "$REMOTE_DEPLOY_PATH/.env" ]; then
     exit 1
 fi
 
-UNIT_SRC="$REMOTE_DEPLOY_PATH/fromchat.service"
-if [ -f "$UNIT_SRC" ]; then
-    # Ensure WorkingDirectory matches deploy path
-    sed -i.bak "s|^WorkingDirectory=.*|WorkingDirectory=$REMOTE_DEPLOY_PATH|" "$UNIT_SRC" || true
-    sudo_cmd cp -f "$UNIT_SRC" /etc/systemd/system/fromchat.service
+if [ ! -f "$REMOTE_DEPLOY_PATH/compose.yml" ]; then
+    echo "❌ compose.yml not found at $REMOTE_DEPLOY_PATH/compose.yml"
+    exit 1
 fi
 
-if systemctl is-active --quiet fromchat; then
+# Remove legacy systemd unit (stack uses docker compose restart: always).
+if systemctl is-active --quiet fromchat 2>/dev/null; then
     sudo_cmd systemctl stop fromchat
 fi
+sudo_cmd systemctl disable fromchat 2>/dev/null || true
+if [ -f /etc/systemd/system/fromchat.service ]; then
+    sudo_cmd rm -f /etc/systemd/system/fromchat.service
+    sudo_cmd systemctl daemon-reload 2>/dev/null || true
+fi
+rm -f "$REMOTE_DEPLOY_PATH/fromchat.service" 2>/dev/null || true
 
-docker compose down --remove-orphans > /dev/null 2>&1 || true
-
-sudo_cmd systemctl daemon-reload
-sudo_cmd systemctl restart fromchat
+docker compose --env-file .env down --remove-orphans > /dev/null 2>&1 || true
+docker compose --env-file .env up -d --remove-orphans
 
 sleep 3
-if ! systemctl is-active --quiet fromchat; then
-    echo "❌ Service failed to start"
-    sudo_cmd journalctl --no-pager -xeu fromchat -n 30
+if ! docker compose --env-file .env ps --status running 2>/dev/null | grep -q .; then
+    echo "❌ No running containers after docker compose up -d"
+    docker compose --env-file .env ps -a
     exit 1
 fi
 """
@@ -402,14 +405,14 @@ echo {pw} | sudo -S -p '' chown -R "$(whoami):$(whoami)" "$D" 2>/dev/null || tru
             capture_output=True,
         )
 
-    def run_remote_systemd(self, creds: SshCredentials, deploy_path_resolved: str) -> None:
-        ui.step("Deploying on server")
+    def run_remote_compose_up(self, creds: SshCredentials, deploy_path_resolved: str) -> None:
+        ui.step("Starting stack on server (docker compose up -d)")
         pw = creds.sudo_password
         dp = deploy_path_resolved
         remote_cmd = f"SUDO_PASSWORD={shlex.quote(pw)} DEPLOY_PATH={shlex.quote(dp)} bash -s"
         r = subprocess.run(
             ssh_argv(creds.server, remote_cmd),
-            input=REMOTE_SYSTEMD_SCRIPT.encode(),
+            input=REMOTE_COMPOSE_UP_SCRIPT.encode(),
             text=False,
         )
         if r.returncode != 0:

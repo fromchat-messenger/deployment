@@ -93,12 +93,6 @@ def _prepare_staging(
         )
         (staging / ".fromchat-version").write_text(tag + "\n", encoding="utf-8")
 
-        if paths.systemd_unit_template.is_file():
-            unit = paths.systemd_unit_template.read_text(encoding="utf-8")
-            if "WorkingDirectory=" not in unit:
-                unit += "\nWorkingDirectory=/opt/fromchat-server\n"
-            (staging / "fromchat.service").write_text(unit, encoding="utf-8")
-
     return staging
 
 
@@ -227,7 +221,7 @@ def main() -> None:
             if "backend" in stack:
                 deploy_resolved = transfer.sync_firebase_cert(creds, deploy_resolved)
             if stack or include_updater:
-                transfer.run_remote_systemd(creds, deploy_resolved)
+                transfer.run_remote_compose_up(creds, deploy_resolved)
 
         print()
         ui.success("Deployment complete!")

@@ -1,1 +1,1 @@
-"""FromChat deployment orchestration (Docker build, pussh, rsync, remote systemd)."""
+"""FromChat deployment orchestration (Docker build, pussh, rsync, remote compose up)."""

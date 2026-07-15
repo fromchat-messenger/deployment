@@ -42,7 +42,6 @@ class ProjectPaths:
     local_cache_root: Path
     local_image_cache_dir: Path
     input_hash_script: Path
-    systemd_unit_template: Path
     generate_compose_script: Path
 
     @classmethod
@@ -88,7 +87,6 @@ class ProjectPaths:
             local_cache_root=cache,
             local_image_cache_dir=cache / "images",
             input_hash_script=scripts_dir / "docker_inputs_hash.py",
-            systemd_unit_template=deployment_root / "templates" / "fromchat.service",
             generate_compose_script=scripts_dir / "generate-compose.py",
         )
 
