@@ -12,6 +12,7 @@ import subprocess
 import sys
 import urllib.error
 import urllib.request
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -222,6 +223,31 @@ def _load_compose(path: Path) -> dict:
     return data
 
 
+def _expand_compose_value(raw: str, env: Mapping[str, str] | None = None) -> str:
+    """Expand Compose-style `${VAR}`, `${VAR:-default}`, and `$VAR` interpolations."""
+    environ = env if env is not None else os.environ
+
+    def repl(match: re.Match[str]) -> str:
+        braced = match.group(1)
+        if braced is not None:
+            name = braced
+            default = match.group(2)
+            value = environ.get(name)
+            if value is not None and value != "":
+                return value
+            if default is not None:
+                return default
+            return ""
+        name = match.group(3)
+        return environ.get(name, "") if name else match.group(0)
+
+    return re.sub(
+        r"\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}|\$([A-Za-z_][A-Za-z0-9_]*)",
+        repl,
+        raw,
+    )
+
+
 def _resolve_build_paths(compose_dir: Path, build: dict | str) -> tuple[Path, Path, str | None, tuple[tuple[str, str], ...]]:
     if isinstance(build, str):
         build = {"context": build}
@@ -250,7 +276,7 @@ def _resolve_build_paths(compose_dir: Path, build: dict | str) -> tuple[Path, Pa
         for key, val in args_raw.items():
             if val is None:
                 continue
-            build_args.append((str(key), str(val)))
+            build_args.append((str(key), _expand_compose_value(str(val))))
 
     return context, dockerfile.resolve(), target_str, tuple(build_args)
 
