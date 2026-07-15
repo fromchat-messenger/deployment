@@ -150,7 +150,7 @@ def load_updater_service(updater_root: Path) -> dict[str, Any]:
             return copy.deepcopy(svc)
     return {
         "build": {"context": str(updater_root), "dockerfile": "Dockerfile"},
-        "restart": "unless-stopped",
+        "restart": "always",
     }
 
 
@@ -166,7 +166,7 @@ def load_updater_networks(updater_root: Path) -> dict[str, Any]:
 
 def patch_updater_service(service: dict[str, Any], *, keep_build: bool) -> None:
     service.setdefault("networks", ["updater"])
-    service.setdefault("restart", "unless-stopped")
+    service.setdefault("restart", "always")
     if keep_build:
         service.pop("env_file", None)
         service.pop("volumes", None)

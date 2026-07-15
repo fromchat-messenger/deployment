@@ -5,94 +5,51 @@ One-click installer for a production FromChat stack on Debian-based Linux.
 ## Quick install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/fromchat-messenger/app/main/deployment/install.sh | sudo bash
+curl -fsSL https://l.fromchat.ru/install|sudo bash
 ```
 
 The installer:
 
-1. Ensures root (re-runs via `sudo` if needed)
-2. Verifies Debian/Ubuntu
-3. Offers to install Docker (official script)
-4. Creates `~/fromchat-server`
-5. Lets you pick components: **backend**, **frontend**, **caddy**, **updater**
-6. Optionally uses custom backend/web git URLs
-7. Resolves the latest common semver tag (`v1.0`, `v1.0.0`, …)
-8. Downloads only `compose.yml` from each repo at that tag
-9. Merges compose files and replaces `build:` with `image: fromchat/<service>:<tag>`
-   (caddy, livekit, and haproxy configs are baked into their images; secrets via `.env`)
-10. Runs `docker compose up -d`
-11. Writes `updater/.env` when updater is selected (updater runs in the main stack)
+1. Installs Docker + Compose plugin if missing
+2. Downloads the published `compose.yml` (`restart: always` on all services)
+3. Runs the backend `.env` generator into `~/fromchat-server/.env`
+4. Prints next steps (configure Caddyfile, then `docker compose up -d`)
 
-## Classic deploy (offline, build on your PC)
+No systemd unit — containers use Docker `restart: always`.
 
-For developers who build images **locally** and transfer them to a server via SSH + `docker pussh` — no registry pulls on the server.
+Short links on `l.fromchat.ru`:
 
-```bash
-cd deployment
-python3 -m venv .venv && .venv/bin/pip install -r requirements-deploy.txt
-# or reuse ../backend/.venv which already has rich + dotenv
+| Path | Target |
+|------|--------|
+| `/install` | This installer script (GitHub → Gitea fallback) |
+| `/telegram` | https://t.me/fromchat_ch |
+| `/max` | https://mxg.su/fromchat_ch |
 
-./deploy.sh user@host ~/fromchat-server linux/arm64 --tag latest
-```
-
-Without `--components`, an interactive checklist opens (backend, frontend, caddy, updater). Non-interactive:
+## After install
 
 ```bash
-./deploy.sh user@host ~/fromchat-server linux/arm64 \
-  --components backend,frontend,caddy,updater \
-  --tag latest
-```
-
-This:
-
-1. Builds all `fromchat/*` images from local `../backend`, `../Web`, `../updater`, and `backend/src/caddy`
-2. Merges compose the same way as the installer (`generate-compose.py`)
-3. Pulls any third-party images from the registry **on this machine**, then transfers everything via pussh
-4. Syncs config to the server and restarts the `fromchat` systemd unit
-5. Optionally installs the updater (also built locally)
-
-The server never pulls from a registry during deploy. Your PC needs network access to pull base images (LiveKit, Docker `FROM` layers, unregistry for pussh).
-
-Override source trees with `FROMCHAT_BACKEND_DIR`, `FROMCHAT_WEB_DIR`, `FROMCHAT_UPDATER_DIR`.  
-`DEPLOYMENT_SERVER` and all server secrets live in **`deployment/.env.prod`** (copied to the server as `.env`).
-
-The old entry point `backend/scripts/deploy.sh` redirects here.
-
-## Generate compose only
-
-```bash
-./install.sh --generate-config backend,frontend,caddy \
-  --tag v1.0.0 \
-  --output-dir ~/fromchat-server \
-  --backend-repo https://github.com/fromchat-messenger/backend.git \
-  --web-repo https://github.com/fromchat-messenger/web.git
+cd ~/fromchat-server
+docker compose --env-file .env up -d
 ```
 
 ## Layout after install
 
 ```
 ~/fromchat-server/
-  compose.yml                 # merged production stack (fromchat/* images)
-  .fromchat-version           # current release tag
-  .env                        # copied from deployment/.env.prod
-  data/prod/caddy/            # persistent ACME certs (must not wipe)
-  fromchat.service            # systemd unit (classic deploy)
-  updater/.env                # when updater selected
+  compose.yml                 # published production stack
+  .env                        # from generate:env
+  compliance_keypair.txt      # keep the private key offline
+  data/prod/                  # runtime data (Caddy ACME under data/prod/caddy/)
+  firebase-cert.json          # optional; empty placeholder created by installer
 ```
 
-Caddy stores Let's Encrypt material under `data/prod/caddy/`. Without that bind mount, every container recreate re-issues certs and hits LE rate limits.
-## GitHub token (updater)
+## Classic deploy (offline, build on your PC)
 
-When **updater** is selected, create a token with `read:packages` and `repo` (works for GitHub and git.fromchat.ru):
+For developers who build images **locally** and transfer them to a server via SSH + `docker pussh`:
 
-https://github.com/settings/tokens/new?description=FromChat%20Updater&scopes=read:packages,repo
+```bash
+cd deployment
+./deploy.sh user@host ~/fromchat-server linux/arm64 --tag latest
+```
 
-Official `github.com/fromchat-messenger/*` repositories automatically fall back to **git.fromchat.ru/FromChat/** if GitHub is unreachable.
-
-## Environment overrides
-
-| Variable | Default |
-|----------|---------|
-| `FROMCHAT_BACKEND_REPO` | `https://github.com/fromchat-messenger/backend.git` |
-| `FROMCHAT_WEB_REPO` | `https://github.com/fromchat-messenger/web.git` |
-| `FROMCHAT_APP_REPO` | `https://github.com/fromchat-messenger/app.git` (deployment + updater tooling) |
+Publish multi-arch images with `./publish.sh`. CI regenerates root `compose.yml` from the latest published release.
