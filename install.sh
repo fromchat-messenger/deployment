@@ -23,9 +23,12 @@ GENERATE_OUTPUT=""
 
 usage() {
   cat <<EOF
-FromChat server installer
+FromChat server installer (experimental)
 
   curl -fsSL https://raw.githubusercontent.com/fromchat-messenger/app/main/deployment/install.sh | sudo bash
+
+  Note: the updater is in active development and probably will not work;
+  Enter skips it by default.
 
 Options:
   --generate-config SERVICES   Merge compose files only (comma-separated:
@@ -148,6 +151,9 @@ full_install() {
   install_docker_if_needed
   ensure_python_yaml
   ensure_compose_plugin
+
+  warn "This installer is experimental."
+  warn "Updater is in active development and probably won't even work (skipped unless you opt in)."
 
   local real_user real_home
   real_user="${SUDO_USER:-${USER}}"

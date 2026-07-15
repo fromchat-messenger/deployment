@@ -152,6 +152,10 @@ def main() -> None:
     try:
         settings = load_settings(paths, sys.argv)
         ui.banner()
+        ui.warning(
+            "Updater is in active development and probably won't even work. "
+            "Enter skips it by default."
+        )
 
         stack = settings.compose_components
         include_updater = "updater" in settings.components

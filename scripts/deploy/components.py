@@ -12,7 +12,8 @@ COMPONENT_OPTIONS: list[tuple[str, str, bool]] = [
     ("backend", "Backend (API, DB, LiveKit)", True),
     ("frontend", "Web frontend", True),
     ("caddy", "Caddy reverse proxy (TLS)", True),
-    ("updater", "Auto-update service", True),
+    # Updater is opt-in — Enter / default skips it.
+    ("updater", "Auto-update service", False),
 ]
 
 ALLOWED = {name for name, _, _ in COMPONENT_OPTIONS}
@@ -39,6 +40,10 @@ def parse_components_csv(raw: str) -> list[str]:
 
 def select_components_interactive() -> list[str]:
     ui.step("Select components")
+    ui.warning(
+        "Updater is in active development and probably won't even work. "
+        "Enter skips it by default."
+    )
     selected: list[str] = []
     try:
         for name, label, default_on in COMPONENT_OPTIONS:

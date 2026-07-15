@@ -21,7 +21,7 @@ from deploy.util import (
 )
 
 FROMCHAT_IMAGE_SERVICES = frozenset(
-    {"main", "messaging", "file_storage", "postgres", "web", "caddy", "updater"}
+    {"backend", "messaging", "file_storage", "postgres", "web", "caddy", "updater"}
 )
 FROMCHAT_PREFIX = "fromchat/"
 BUILD_COMPOSE_FILE = "compose.build.yml"

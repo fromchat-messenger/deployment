@@ -129,10 +129,12 @@ select_components() {
     "Caddy reverse proxy (TLS)"
     "Auto-update service"
   )
-  local -a defaults=(Y Y Y Y)
+  # Updater is opt-in — Enter defaults to No.
+  local -a defaults=(Y Y Y N)
   SELECTED=()
   local i choice hint
   step "Select components"
+  warn "Updater is in active development and probably won't even work. Enter skips it."
   for i in "${!options[@]}"; do
     if [[ "${defaults[$i]}" == "Y" ]]; then
       hint="Y/n"
