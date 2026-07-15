@@ -109,9 +109,7 @@ private fun isMessageCorrupted(message: Message): Boolean {
 }
 
 /**
- * Scales layout height with the enter animation so the list pushes older
- * messages up in real time. Visual scale is applied separately via graphicsLayer
- * on the bubble (with a correct transform origin).
+ * Scales layout height with the exit animation so the list collapses in real time.
  */
 private fun Modifier.enterLayoutHeight(
     scale: Float,
@@ -128,6 +126,44 @@ private fun Modifier.enterLayoutHeight(
         // Anchor to the bottom of the allocated slot (reverseLayout chat).
         layout(placeable.width, h) {
             placeable.placeRelative(0, h - placeable.height)
+        }
+    }
+}
+
+/**
+ * Scales bubble layout and drawing together during enter so width and height stay
+ * proportional (avoids tall narrow strips while the list slot grows).
+ */
+private fun Modifier.enterBubbleScale(
+    scale: Float,
+    transformOrigin: TransformOrigin,
+    active: Boolean,
+): Modifier {
+    if (!active) return this
+    return layout { measurable, constraints ->
+        val placeable = measurable.measure(constraints)
+        val layoutScale = scale.coerceAtLeast(0f)
+        val width = (placeable.width * layoutScale).roundToInt().coerceAtLeast(
+            if (layoutScale > 0f) 1 else 0,
+        )
+        val height = (placeable.height * layoutScale).roundToInt().coerceAtLeast(
+            if (layoutScale > 0f) 1 else 0,
+        )
+        val anchorX = if (transformOrigin.pivotFractionX >= 0.5f) {
+            width - placeable.width
+        } else {
+            0
+        }
+        layout(width, height) {
+            placeable.placeRelativeWithLayer(
+                x = anchorX,
+                y = height - placeable.height,
+            ) {
+                scaleX = layoutScale
+                scaleY = layoutScale
+                this.transformOrigin = transformOrigin
+                alpha = if (layoutScale <= 0.001f) 0f else 1f
+            }
         }
     }
 }
@@ -166,6 +202,27 @@ fun MessageItem(
 ) {
     val isCorrupted = remember(message.files, message.fileThumbnails, message.dmEnvelope) {
         isMessageCorrupted(message)
+    }
+    val primaryIsImageMessage = remember(
+        message.reply_to,
+        message.pendingFileUri,
+        message.pendingFilename,
+        message.files,
+    ) {
+        val pendingIsImage = when {
+            message.pendingFileUri != null &&
+                DecryptedImageCache.isDecryptedImageCacheUri(message.pendingFileUri) -> true
+            message.pendingFilename?.isNotBlank() == true ->
+                isImageFilename(message.pendingFilename)
+            message.pendingFileUri != null -> isImageFilename(
+                message.pendingFileUri.substringAfterLast('/').substringBefore('?')
+            )
+            else -> false
+        }
+        message.reply_to == null && (
+            pendingIsImage ||
+                message.files?.firstOrNull()?.let { isImageFilename(it.name) } == true
+        )
     }
     val formattedTime = remember(message.timestamp) {
         formatMessageTimeLocal(message.timestamp)
@@ -264,18 +321,22 @@ fun MessageItem(
                 "enterFinished=$enterFinished scale=${enterScale.value}",
         )
     }
-    LaunchedEffect(enterIdentity, isNewEnterRole) {
-        if (isNewEnterRole && !enterStarted) {
+    LaunchedEffect(enterIdentity, isNewEnterRole, primaryIsImageMessage) {
+        if (isNewEnterRole && primaryIsImageMessage) {
+            enterStarted = true
+            enterFinished = true
+            enterScale.snapTo(1f)
+        } else if (isNewEnterRole && !enterStarted) {
             enterStarted = true
             enterFinished = false
             enterScale.snapTo(0f)
         }
     }
-    val runEnterAnimation = enterStarted && !enterFinished && !isExiting
-    val shrinkLayoutForEnter = isNewEnterRole && runEnterAnimation
+    val runEnterAnimation =
+        enterStarted && !enterFinished && !isExiting && !primaryIsImageMessage
     // Single effect: start the spring as soon as this bubble is marked for enter.
-    LaunchedEffect(enterIdentity, runEnterAnimation) {
-        if (!runEnterAnimation) return@LaunchedEffect
+    LaunchedEffect(enterIdentity, runEnterAnimation, primaryIsImageMessage) {
+        if (primaryIsImageMessage || !runEnterAnimation) return@LaunchedEffect
         Logger.d(
             "EnterAnim",
             "spring_start identity=${enterIdentity.take(12)} " +
@@ -425,9 +486,9 @@ fun MessageItem(
                 .then(rowLongPress)
                 .padding(horizontal = 8.dp)
                 .enterLayoutHeight(
-                    scale = if (isExiting) layoutCollapse.value else enterScale.value,
+                    scale = layoutCollapse.value,
                     minHeightPx = minEnterHeightPx,
-                    active = shrinkLayoutForEnter || isExiting,
+                    active = isExiting,
                 ),
             horizontalArrangement = if (isAuthor) Arrangement.End else Arrangement.Start,
             verticalAlignment = Alignment.Bottom,
@@ -508,9 +569,7 @@ fun MessageItem(
                         } else {
                             null
                         }
-                    val firstContentIsImage = (
-                        !showUsername || isAuthor
-                    ) && message.reply_to == null && (
+                    val primaryIsImageContent = message.reply_to == null && (
                         pendingIsImage ||
                             message.files?.firstOrNull()?.let { isImageFilename(it.name) } == true
                     )
@@ -547,15 +606,11 @@ fun MessageItem(
                         Column(
                             horizontalAlignment =
                                 if (isAuthor) Alignment.End else Alignment.Start,
-                            modifier = Modifier.graphicsLayer {
-                                if (runEnterAnimation) {
-                                    val s = enterScale.value
-                                    scaleX = s
-                                    scaleY = s
-                                    transformOrigin = enterTransformOrigin
-                                    alpha = if (s <= 0.001f) 0f else 1f
-                                }
-                            },
+                            modifier = Modifier.enterBubbleScale(
+                                scale = enterScale.value,
+                                transformOrigin = enterTransformOrigin,
+                                active = runEnterAnimation,
+                            ),
                         ) {
                         Box(
                             modifier = Modifier
@@ -575,8 +630,8 @@ fun MessageItem(
                                     }
                                 )
                                 .padding(
-                                    top = if (firstContentIsImage) 0.dp else 8.dp,
-                                    bottom = 8.dp,
+                                    top = if (primaryIsImageContent) 0.dp else 8.dp,
+                                    bottom = if (primaryIsImageContent && !hasImageCaption) 0.dp else 8.dp,
                                 )
                         ) {
                             Column(modifier = Modifier.width(IntrinsicSize.Max)) {
@@ -816,7 +871,8 @@ fun MessageItem(
                                                     onCancelUpload = onCancelUpload,
                                                     messageGroup = group,
                                                     expandToBubbleWidth = hasImageCaption,
-                                                    modifier = if (firstContentIsImage) {
+                                                    freezeLayoutAspect = runEnterAnimation,
+                                                    modifier = if (primaryIsImageContent) {
                                                         Modifier.padding(all = 2.dp)
                                                     } else {
                                                         Modifier.padding(
@@ -947,11 +1003,8 @@ fun MessageItem(
                                                     messageGroup = group,
                                                     expandToBubbleWidth =
                                                         isImage && hasImageCaption,
-                                                    modifier = if (
-                                                        isFirstImage &&
-                                                        firstContentIsImage &&
-                                                        isImage
-                                                    ) {
+                                                    freezeLayoutAspect = runEnterAnimation,
+                                                    modifier = if (isFirstImage && primaryIsImageContent && isImage) {
                                                         Modifier.padding(all = 2.dp)
                                                     } else {
                                                         Modifier.padding(

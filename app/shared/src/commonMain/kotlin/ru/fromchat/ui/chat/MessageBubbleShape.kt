@@ -12,11 +12,18 @@ import androidx.compose.ui.unit.dp
 internal val BUBBLE_RADIUS_LARGE = 20.dp
 internal val BUBBLE_RADIUS_SMALL = 4.dp
 
+internal data class AnimatedBubbleRadii(
+    val topStart: Dp,
+    val topEnd: Dp,
+    val bottomStart: Dp,
+    val bottomEnd: Dp,
+)
+
 @Composable
-internal fun rememberAnimatedBubbleShape(
+internal fun rememberAnimatedBubbleRadii(
     isAuthor: Boolean,
     group: MessageGroupInfo,
-): RoundedCornerShape {
+): AnimatedBubbleRadii {
     val large = BUBBLE_RADIUS_LARGE
     val small = BUBBLE_RADIUS_SMALL
 
@@ -47,11 +54,25 @@ internal fun rememberAnimatedBubbleShape(
     val bottomStart by animateDpAsState(bottomStartTarget, springSpec, label = "bubbleBottomStart")
     val bottomEnd by animateDpAsState(bottomEndTarget, springSpec, label = "bubbleBottomEnd")
 
-    return RoundedCornerShape(
+    return AnimatedBubbleRadii(
         topStart = topStart,
         topEnd = topEnd,
         bottomStart = bottomStart,
         bottomEnd = bottomEnd,
+    )
+}
+
+@Composable
+internal fun rememberAnimatedBubbleShape(
+    isAuthor: Boolean,
+    group: MessageGroupInfo,
+): RoundedCornerShape {
+    val radii = rememberAnimatedBubbleRadii(isAuthor, group)
+    return RoundedCornerShape(
+        topStart = radii.topStart,
+        topEnd = radii.topEnd,
+        bottomStart = radii.bottomStart,
+        bottomEnd = radii.bottomEnd,
     )
 }
 
@@ -65,5 +86,18 @@ internal fun bubbleTopRadii(
         large to if (group.hasSameAuthorAbove) small else large
     } else {
         (if (group.hasSameAuthorAbove) small else large) to large
+    }
+}
+
+internal fun bubbleBottomRadii(
+    isAuthor: Boolean,
+    group: MessageGroupInfo,
+): Pair<Dp, Dp> {
+    val large = BUBBLE_RADIUS_LARGE
+    val small = BUBBLE_RADIUS_SMALL
+    return if (isAuthor) {
+        large to if (group.hasSameAuthorBelow) small else large
+    } else {
+        (if (group.hasSameAuthorBelow) small else large) to large
     }
 }

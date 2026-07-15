@@ -69,8 +69,10 @@ import androidx.compose.ui.unit.dp
 import coil3.compose.AsyncImage
 import com.pr0gramm3r101.utils.crypto.Base64
 import dev.chrisbanes.haze.hazeEffect
+import dev.chrisbanes.haze.hazeSource
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import dev.chrisbanes.haze.materials.HazeMaterials
+import dev.chrisbanes.haze.rememberHazeState
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -84,7 +86,6 @@ import ru.fromchat.api.local.download.AttachmentDownloadNotifier
 import ru.fromchat.api.local.download.AttachmentDownloadScheduler
 import ru.fromchat.api.local.download.ChatPreviewDecodeSize
 import ru.fromchat.api.local.download.LocalDecodedImageCache
-import ru.fromchat.api.local.download.rememberChatPreviewDecodeSize
 import ru.fromchat.api.local.send.previewSeedDecodeSize
 import ru.fromchat.api.schema.messages.dm.DmEnvelope
 import ru.fromchat.api.schema.messages.dm.DmFile
@@ -94,21 +95,20 @@ import ru.fromchat.attachment_upload_failed
 import ru.fromchat.attachment_upload_failed_too_large
 import ru.fromchat.cd_attachment_retry
 import ru.fromchat.cd_attachment_upload_retry
+import ru.fromchat.ui.chat.MessageGroupInfo
 import ru.fromchat.ui.chat.components.AttachmentLeadingTransitionMs
 import ru.fromchat.ui.chat.components.CancellableAttachmentProgressIndicator
 import ru.fromchat.ui.chat.components.ChatFileAttachmentTile
 import ru.fromchat.ui.chat.components.FileAttachmentLeadingSlot
-import ru.fromchat.ui.chat.utils.ATTACHMENT_TILE_MAX_WIDTH
 import ru.fromchat.ui.chat.utils.attachmentDecodeCacheKeys
 import ru.fromchat.ui.chat.utils.attachmentImageCornerShape
 import ru.fromchat.ui.chat.utils.attachmentTileLayout
-import ru.fromchat.ui.chat.utils.coalesceDecodeTarget
 import ru.fromchat.ui.chat.utils.decodeSizeChangedMeaningfully
 import ru.fromchat.ui.chat.utils.peekDecodedAttachmentBitmap
 import ru.fromchat.ui.chat.utils.preferDecodedAspectRatio
+import ru.fromchat.ui.chat.utils.rememberAnimatedAttachmentImageCornerShape
 import ru.fromchat.ui.components.Text
 import com.pr0gramm3r101.utils.scaleOnPress
-import ru.fromchat.ui.chat.MessageGroupInfo
 
 private const val BLUR_FADE_MS = 450
 
@@ -157,6 +157,8 @@ fun AttachmentPreview(
     ),
     /** When true, grow the tile to the bubble width (e.g. caption text is wider). */
     expandToBubbleWidth: Boolean = false,
+    /** While true, keep the tile aspect fixed (message enter animation). */
+    freezeLayoutAspect: Boolean = false,
     modifier: Modifier = Modifier,
 ) {
     val isImage = when {
@@ -202,11 +204,20 @@ fun AttachmentPreview(
             )
         }
         showImageTile -> {
+            val imageCornerShape = rememberAnimatedAttachmentImageCornerShape(
+                isAuthor = isAuthor,
+                group = messageGroup,
+            )
             var isFullyLoaded by remember(messageId, fileIndex, file?.path, pendingFileUri) {
                 mutableStateOf(false)
             }
             var effectiveAspect by remember(messageId, fileIndex, file?.path, pendingFileUri, fileAspectRatio) {
                 mutableStateOf(fileAspectRatio)
+            }
+            LaunchedEffect(fileAspectRatio) {
+                fileAspectRatio?.takeIf { it.isFinite() && it > 0f }?.let { aspect ->
+                    effectiveAspect = aspect
+                }
             }
             Box(
                 modifier = modifier
@@ -227,7 +238,7 @@ fun AttachmentPreview(
                         aspectRatio = effectiveAspect,
                         expandToBubbleWidth = expandToBubbleWidth,
                     )
-                    .clip(attachmentImageCornerShape(isAuthor, messageGroup))
+                    .clip(imageCornerShape)
                     .then(
                         if (onImageBounds != null && showImageTile) {
                             Modifier.onGloballyPositioned { coords ->
@@ -280,10 +291,18 @@ fun AttachmentPreview(
                             onCancelUpload = onCancelUpload,
                             onFullyLoaded = { if (it) isFullyLoaded = true },
                             messageGroup = messageGroup,
+                            imageCornerShape = imageCornerShape,
+                            freezeLayoutAspect = freezeLayoutAspect,
                             onResolvedAspectRatio = { width, height ->
-                                val resolved = preferDecodedAspectRatio(fileAspectRatio, width, height)
-                                if (resolved != effectiveAspect) {
-                                    effectiveAspect = resolved
+                                if (!freezeLayoutAspect) {
+                                    val resolved = preferDecodedAspectRatio(
+                                        fileAspectRatio,
+                                        width,
+                                        height,
+                                    )
+                                    if (resolved != effectiveAspect) {
+                                        effectiveAspect = resolved
+                                    }
                                 }
                             },
                         )
@@ -320,23 +339,21 @@ private fun ChatImageTileContent(
         hasSameAuthorAbove = false,
         hasSameAuthorBelow = false,
     ),
+    imageCornerShape: RoundedCornerShape? = null,
+    freezeLayoutAspect: Boolean = false,
     onResolvedAspectRatio: ((width: Int, height: Int) -> Unit)? = null,
 ) {
     val scope = rememberCoroutineScope()
-    val clipShape = attachmentImageCornerShape(isAuthor, messageGroup)
+    val clipShape = imageCornerShape ?: attachmentImageCornerShape(isAuthor, messageGroup)
     val cacheClientId = clientMessageId?.trim()?.takeIf { it.isNotEmpty() }
     val layoutAspect = aspectRatio?.takeIf { it.isFinite() && it > 0f }
-    val fallbackDecodeSize = rememberChatPreviewDecodeSize(ATTACHMENT_TILE_MAX_WIDTH, layoutAspect)
-    val seedDecodeSize = remember(layoutAspect) { previewSeedDecodeSize(layoutAspect) }
     val decodeCacheKeys = remember(cacheClientId, messageId, fileIndex) {
         attachmentDecodeCacheKeys(messageId, fileIndex, cacheClientId)
     }
     val bitmapStateKey = remember(decodeCacheKeys) { decodeCacheKeys.joinToString("|") }
     val decryptCacheKey = decodeCacheKeys.first()
     var tileDecodeSize by remember(bitmapStateKey) { mutableStateOf<ChatPreviewDecodeSize?>(null) }
-    val decodeSize = remember(tileDecodeSize, fallbackDecodeSize, seedDecodeSize) {
-        coalesceDecodeTarget(tileDecodeSize, fallbackDecodeSize, seedDecodeSize)
-    }
+    val tileLoadTarget = remember(bitmapStateKey) { previewSeedDecodeSize(layoutAspect) }
 
     var cachedPath by remember(bitmapStateKey) {
         mutableStateOf(DecryptedImageCache.getCached(messageId, fileIndex, cacheClientId))
@@ -346,7 +363,12 @@ private fun ChatImageTileContent(
     val displayLocalUri = localUri?.trim()?.takeIf { it.isNotEmpty() } ?: diskCacheUri
     val hasLocalSource = displayLocalUri != null
 
-    val initialFull = remember(bitmapStateKey) { peekDecodedAttachmentBitmap(decodeCacheKeys) }
+    fun isPreviewQuality(bitmap: ImageBitmap): Boolean =
+        !LocalDecodedImageCache.needsUpscale(bitmap, tileLoadTarget)
+
+    val initialFull = remember(bitmapStateKey, tileLoadTarget) {
+        peekDecodedAttachmentBitmap(decodeCacheKeys)?.takeIf { isPreviewQuality(it) }
+    }
     var fullBitmap by remember(bitmapStateKey) {
         mutableStateOf(initialFull)
     }
@@ -434,8 +456,9 @@ private fun ChatImageTileContent(
         }
     }
 
-    val imageContentScale = ContentScale.Fit
+    val imageContentScale = ContentScale.Crop
     val tilePlaceholderColor = MaterialTheme.colorScheme.surfaceContainerHigh.copy(alpha = 0.42f)
+    val thumbHazeState = rememberHazeState(blurEnabled = true)
 
     LaunchedEffect(messageId, fileIndex, cacheClientId) {
         DecryptedImageCache.getCached(messageId, fileIndex, cacheClientId)?.let { uri ->
@@ -443,63 +466,70 @@ private fun ChatImageTileContent(
         }
     }
 
+    // Keys omit localUri/diskCacheUri: Success patches pendingFileUri and would cancel mid-download.
     LaunchedEffect(
         decryptCacheKey,
-        localUri,
-        diskCacheUri,
         serverFile?.path,
         messageId,
         isOutboundPending,
         cacheClientId,
         loadAttempt,
-        decodeSize,
     ) {
+        val decodeTarget = tileLoadTarget
         AttachmentMediaLog.tileLoad(
             "load_start",
             "key" to decryptCacheKey,
             "msgId" to messageId,
             "pending" to isOutboundPending,
             "localUri" to (localUri?.take(48) ?: "null"),
-            "diskCache" to (diskCacheUri?.take(48) ?: "null"),
-            "target" to "${decodeSize.widthPx}x${decodeSize.heightPx}",
+            "diskCache" to (DecryptedImageCache.getCached(messageId, fileIndex, cacheClientId)?.take(48) ?: "null"),
+            "target" to "${decodeTarget.widthPx}x${decodeTarget.heightPx}",
         )
-        // Already showing a decoded preview — never flash failed/loading by re-fetching.
-        val cachedBitmap = fullBitmap ?: peekDecodedAttachmentBitmap(decodeCacheKeys)
-        if (cachedBitmap != null && (isOutboundPending || isUploading || awaitingServerAck ||
-                isAuthor || hasLocalSource)
-        ) {
-            if (fullBitmap == null) {
-                fullBitmap = cachedBitmap
-            }
+
+        fun acceptFull(bitmap: ImageBitmap, path: String?) {
+            fullBitmap = bitmap
+            if (path != null) cachedPath = path
             decryptFinished = true
             AttachmentDownloadNotifier.clearProgress(messageId, fileIndex, cacheClientId)
             onFullyLoaded(true)
-            AttachmentMediaLog.send(
-                "tile_keep_local",
-                "key" to decryptCacheKey,
-                "msgId" to messageId,
-                "pending" to isOutboundPending,
-                "uploading" to isUploading,
-            )
-            return@LaunchedEffect
         }
-        val diskUri = diskCacheUri
-            ?: DecryptedImageCache.getCached(messageId, fileIndex, cacheClientId)?.also { cachedPath = it }
+
+        val peeked = fullBitmap ?: peekDecodedAttachmentBitmap(decodeCacheKeys)
+        if (peeked != null) {
+            val keep = isOutboundPending || isUploading || awaitingServerAck || isAuthor ||
+                isPreviewQuality(peeked)
+            if (keep) {
+                acceptFull(peeked, cachedPath ?: localUri)
+                AttachmentMediaLog.send(
+                    "tile_keep_local",
+                    "key" to decryptCacheKey,
+                    "msgId" to messageId,
+                    "pending" to isOutboundPending,
+                    "uploading" to isUploading,
+                    "quality" to "${peeked.width}x${peeked.height}",
+                )
+                return@LaunchedEffect
+            }
+            // Soft in-memory decode: drop so we show the thumb until HQ is ready.
+            if (fullBitmap != null) fullBitmap = null
+            LocalDecodedImageCache.evict(decryptCacheKey)
+        }
+
+        val diskUri = DecryptedImageCache.getCached(messageId, fileIndex, cacheClientId)
+            ?.also { if (cachedPath != it) cachedPath = it }
         val localPaths = buildList {
             localUri?.trim()?.takeIf { it.isNotEmpty() }?.let { add(it) }
             diskUri?.let { cached -> if (none { it == cached }) add(cached) }
         }
         if (localPaths.isNotEmpty()) {
-            val quickDecode = previewSeedDecodeSize(aspectRatio)
             val loaded = withContext(Dispatchers.Default) {
-                peekDecodedAttachmentBitmap(decodeCacheKeys)
-                    ?: localPaths.firstNotNullOfOrNull { path ->
-                        LocalDecodedImageCache.loadFull(
-                            decryptCacheKey,
-                            path.removePrefix("file://"),
-                            quickDecode,
-                        )
-                    }
+                localPaths.firstNotNullOfOrNull { path ->
+                    LocalDecodedImageCache.loadFull(
+                        decryptCacheKey,
+                        path.removePrefix("file://"),
+                        decodeTarget,
+                    )
+                }
             }
             if (loaded != null) {
                 AttachmentMediaLog.tileLoad(
@@ -508,13 +538,10 @@ private fun ChatImageTileContent(
                     "source" to "disk_or_pending",
                     "bmp" to "${loaded.width}x${loaded.height}",
                 )
-                fullBitmap = loaded
-                cachedPath = diskUri ?: localPaths.firstOrNull()
-                decryptFinished = true
-                AttachmentDownloadNotifier.clearProgress(messageId, fileIndex, cacheClientId)
-                onFullyLoaded(true)
-                // Own sends with a local preview never need a network round-trip for display.
+                acceptFull(loaded, diskUri ?: localPaths.firstOrNull())
                 if (isOutboundPending || isAuthor) return@LaunchedEffect
+                // Inbound: local HQ is enough — don't hit network again.
+                if (isPreviewQuality(loaded)) return@LaunchedEffect
             } else {
                 AttachmentMediaLog.tileLoad(
                     "load_local_miss",
@@ -523,7 +550,6 @@ private fun ChatImageTileContent(
                 )
             }
         }
-        // Own sends: never fall through to network while a local/disk preview exists (or is expected).
         if (isOutboundPending || isUploading || awaitingServerAck || isAuthor) {
             if (fullBitmap == null && localPaths.isEmpty()) {
                 DecryptedImageCache.getCached(messageId, fileIndex, cacheClientId)?.let { uri ->
@@ -532,14 +558,11 @@ private fun ChatImageTileContent(
                         LocalDecodedImageCache.loadFull(
                             decryptCacheKey,
                             uri.removePrefix("file://"),
-                            decodeSize,
+                            decodeTarget,
                         )
                     }
                     if (loaded != null) {
-                        fullBitmap = loaded
-                        decryptFinished = true
-                        AttachmentDownloadNotifier.clearProgress(messageId, fileIndex, cacheClientId)
-                        onFullyLoaded(true)
+                        acceptFull(loaded, uri)
                         AttachmentMediaLog.send(
                             "tile_cache_hit",
                             "key" to decryptCacheKey,
@@ -574,11 +597,12 @@ private fun ChatImageTileContent(
             AttachmentMediaLog.tileLoad("load_skip_no_file", "key" to decryptCacheKey)
             return@LaunchedEffect
         }
-        if (diskUri != null) {
-            cachedPath = diskUri
+        if (diskUri != null && fullBitmap == null) {
             val loaded = withContext(Dispatchers.Default) {
-                LocalDecodedImageCache.loadFull(decryptCacheKey, diskUri.removePrefix("file://"),
-                    decodeSize
+                LocalDecodedImageCache.loadFull(
+                    decryptCacheKey,
+                    diskUri.removePrefix("file://"),
+                    decodeTarget,
                 )
             }
             if (loaded != null) {
@@ -588,9 +612,7 @@ private fun ChatImageTileContent(
                     "uri" to diskUri,
                     "bmp" to "${loaded.width}x${loaded.height}",
                 )
-                fullBitmap = loaded
-                decryptFinished = true
-                onFullyLoaded(true)
+                acceptFull(loaded, diskUri)
                 return@LaunchedEffect
             }
             AttachmentMediaLog.tileLoad(
@@ -626,6 +648,8 @@ private fun ChatImageTileContent(
                     messageLabel = messageLabel,
                 )
             }
+        } catch (error: kotlinx.coroutines.CancellationException) {
+            throw error
         } catch (error: Throwable) {
             AttachmentMediaLog.tileLoad(
                 "load_exception",
@@ -637,28 +661,29 @@ private fun ChatImageTileContent(
         } finally {
             isAwaitingNetworkFull = false
         }
-        cachedPath = uri
+        if (uri != null) cachedPath = uri
         if (uri != null) {
-            fullBitmap = withContext(Dispatchers.Default) {
-                LocalDecodedImageCache.loadFull(decryptCacheKey, uri.removePrefix("file://"),
-                    decodeSize
+            val loaded = withContext(Dispatchers.Default) {
+                LocalDecodedImageCache.loadFull(
+                    decryptCacheKey,
+                    uri.removePrefix("file://"),
+                    decodeTarget,
                 )
             }
+            if (loaded != null) acceptFull(loaded, uri)
+            else decryptFinished = true
+        } else {
+            decryptFinished = true
         }
-        decryptFinished = true
         AttachmentMediaLog.tileLoad(
             if (fullBitmap != null) "load_done" else "load_failed",
             "key" to decryptCacheKey,
             "uri" to uri,
             "msg" to AttachmentMediaLog.messageLabel(messageLabel),
         )
-        if (fullBitmap != null) {
-            AttachmentDownloadNotifier.clearProgress(messageId, fileIndex, cacheClientId)
-            onFullyLoaded(true)
-        }
     }
 
-    LaunchedEffect(decryptCacheKey, tileDecodeSize) {
+    LaunchedEffect(decryptCacheKey, tileDecodeSize, fullBitmap?.width, fullBitmap?.height) {
         val target = tileDecodeSize ?: return@LaunchedEffect
         val current = fullBitmap ?: return@LaunchedEffect
         if (!LocalDecodedImageCache.needsUpscale(current, target)) return@LaunchedEffect
@@ -685,7 +710,8 @@ private fun ChatImageTileContent(
         if (placeholderBitmap != null) decryptFinished = true
     }
 
-    LaunchedEffect(fullBitmap, placeholderBitmap) {
+    LaunchedEffect(fullBitmap, placeholderBitmap, freezeLayoutAspect) {
+        if (freezeLayoutAspect) return@LaunchedEffect
         val bitmap = fullBitmap ?: placeholderBitmap ?: return@LaunchedEffect
         onResolvedAspectRatio?.invoke(bitmap.width, bitmap.height)
     }
@@ -703,11 +729,11 @@ private fun ChatImageTileContent(
     }
 
     val suppressNetworkChrome = treatAsOutbound || hasLocalSource || hasDiskCache ||
-        fullBitmap != null || placeholderBitmap != null || (isAuthor && localUri != null)
+        fullBitmap != null || (isAuthor && localUri != null)
     val isDownloadingFullImage = !treatAsOutbound && fullBitmap == null &&
         (downloadProgress != null || isAwaitingNetworkFull) && !suppressNetworkChrome
     val showDownloadProgressOverlay = isDownloadingFullImage && !showOutboundBlurOverlay &&
-        !downloadCancelled && !hasLocalSource
+        !downloadCancelled && !hasLocalSource && placeholderBitmap == null
     val showDownloadCancelledOverlay = downloadCancelled && fullBitmap == null && !treatAsOutbound &&
         !suppressNetworkChrome
     val showLoadFailedOverlay = decryptFailed && fullBitmap == null && !treatAsOutbound &&
@@ -755,16 +781,22 @@ private fun ChatImageTileContent(
                         }
                         AttachmentTileVisual.Thumb -> {
                             placeholderBitmap?.let { thumb ->
-                                Box(
-                                    modifier = Modifier
-                                        .fillMaxSize()
-                                        .hazeEffect(style = HazeMaterials.thin()),
-                                ) {
+                                Box(modifier = Modifier.fillMaxSize()) {
                                     CachedAttachmentImage(
                                         bitmap = thumb,
                                         contentDescription = serverFile?.name,
                                         contentScale = imageContentScale,
-                                        modifier = Modifier.fillMaxSize(),
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .hazeSource(thumbHazeState),
+                                    )
+                                    Box(
+                                        modifier = Modifier
+                                            .fillMaxSize()
+                                            .hazeEffect(
+                                                state = thumbHazeState,
+                                                style = HazeMaterials.thin(),
+                                            ),
                                     )
                                 }
                             }

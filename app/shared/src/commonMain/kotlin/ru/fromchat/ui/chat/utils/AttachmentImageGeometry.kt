@@ -1,6 +1,7 @@
 package ru.fromchat.ui.chat.utils
 
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.runtime.Composable
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.layout.layout
 import androidx.compose.ui.unit.Constraints
@@ -14,7 +15,9 @@ import ru.fromchat.api.local.db.isPlaceholderAttachmentDimensions
 import ru.fromchat.api.local.download.ChatPreviewDecodeSize
 import ru.fromchat.api.local.download.LocalDecodedImageCache
 import ru.fromchat.ui.chat.MessageGroupInfo
+import ru.fromchat.ui.chat.bubbleBottomRadii
 import ru.fromchat.ui.chat.bubbleTopRadii
+import ru.fromchat.ui.chat.rememberAnimatedBubbleRadii
 
 /** Max attachment preview width in chat bubbles (160dp × 1.3). */
 internal val ATTACHMENT_TILE_MAX_WIDTH = 208.dp
@@ -27,9 +30,6 @@ internal val ATTACHMENT_TILE_MIN_SHORT_EDGE = 104.dp
 
 /** Padding between bubble edge and attachment image (must match MessageItem image padding). */
 internal val ATTACHMENT_IMAGE_INSET = 2.dp
-
-/** Slight rounding on image preview bottom corners (less than bubble). */
-private val IMAGE_BOTTOM_CORNER = 4.dp
 
 /**
  * Fixed dp tile size from max bounds + aspect ratio.
@@ -111,7 +111,22 @@ internal fun Modifier.attachmentTileLayout(
     }
 }
 
-/** Inner clip: top corners follow bubble minus inset; bottom corners lightly rounded. */
+private fun attachmentImageCornerShapeFromBubbleRadii(
+    topStart: Dp,
+    topEnd: Dp,
+    bottomStart: Dp,
+    bottomEnd: Dp,
+): RoundedCornerShape {
+    val inset = ATTACHMENT_IMAGE_INSET
+    return RoundedCornerShape(
+        topStart = (topStart - inset).coerceAtLeast(0.dp),
+        topEnd = (topEnd - inset).coerceAtLeast(0.dp),
+        bottomStart = (bottomStart - inset).coerceAtLeast(0.dp),
+        bottomEnd = (bottomEnd - inset).coerceAtLeast(0.dp),
+    )
+}
+
+/** Inner clip: corners follow the bubble minus [ATTACHMENT_IMAGE_INSET]. */
 internal fun attachmentImageCornerShape(
     isAuthor: Boolean,
     group: MessageGroupInfo = MessageGroupInfo(
@@ -119,13 +134,27 @@ internal fun attachmentImageCornerShape(
         hasSameAuthorBelow = false,
     ),
 ): RoundedCornerShape {
-    val inset = ATTACHMENT_IMAGE_INSET
     val (topStart, topEnd) = bubbleTopRadii(isAuthor, group)
-    return RoundedCornerShape(
-        topStart = (topStart - inset).coerceAtLeast(0.dp),
-        topEnd = (topEnd - inset).coerceAtLeast(0.dp),
-        bottomStart = IMAGE_BOTTOM_CORNER,
-        bottomEnd = IMAGE_BOTTOM_CORNER,
+    val (bottomStart, bottomEnd) = bubbleBottomRadii(isAuthor, group)
+    return attachmentImageCornerShapeFromBubbleRadii(
+        topStart = topStart,
+        topEnd = topEnd,
+        bottomStart = bottomStart,
+        bottomEnd = bottomEnd,
+    )
+}
+
+@Composable
+internal fun rememberAnimatedAttachmentImageCornerShape(
+    isAuthor: Boolean,
+    group: MessageGroupInfo,
+): RoundedCornerShape {
+    val radii = rememberAnimatedBubbleRadii(isAuthor, group)
+    return attachmentImageCornerShapeFromBubbleRadii(
+        topStart = radii.topStart,
+        topEnd = radii.topEnd,
+        bottomStart = radii.bottomStart,
+        bottomEnd = radii.bottomEnd,
     )
 }
 
