@@ -15,7 +15,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 import yaml
-from rich.prompt import Confirm, Prompt
+from rich.prompt import Prompt
 
 from deploy.docker_local import BUILDER_NAME, ensure_buildx, ensure_daemon
 from deploy.paths import ProjectPaths
@@ -289,6 +289,24 @@ def discover_image_specs(paths: ProjectPaths) -> list[ImageSpec]:
     return sorted(specs, key=lambda s: s.service)
 
 
+def _confirm(prompt: str, *, default: bool = True) -> bool:
+    """Block for real TTY input — Rich Confirm can accept defaults without a keypress."""
+    if not sys.stdin.isatty() or not sys.stdout.isatty():
+        return default
+    suffix = "Y/n" if default else "y/N"
+    try:
+        answer = input(f"  {prompt} [{suffix}]: ").strip().lower()
+    except EOFError:
+        return default
+    if not answer:
+        return default
+    if answer in ("y", "yes"):
+        return True
+    if answer in ("n", "no"):
+        return False
+    return default
+
+
 def parse_services_csv(raw: str, allowed: set[str]) -> list[str]:
     out: list[str] = []
     for part in raw.split(","):
@@ -306,26 +324,13 @@ def parse_services_csv(raw: str, allowed: set[str]) -> list[str]:
     return out
 
 
-def select_services_interactive(
-    specs: list[ImageSpec],
-    saved: dict[str, object] | None,
-) -> list[str]:
-    ui.step("Select services to publish")
-    saved_services = saved.get("services") if isinstance(saved, dict) else None
-    saved_set = set(saved_services) if isinstance(saved_services, list) else set()
-    has_saved = bool(saved_set)
-
-    selected: list[str] = []
+def list_all_services(specs: list[ImageSpec]) -> list[str]:
+    ui.step("Services to publish")
+    names: list[str] = []
     for spec in specs:
-        default_on = spec.service in saved_set if has_saved else True
-        label = f"{spec.service} ({spec.repo_root.name})"
-        if Confirm.ask(f"  Publish {label}?", default=default_on):
-            selected.append(spec.service)
-
-    if not selected:
-        ui.error("Select at least one service.")
-        raise SystemExit(1)
-    return selected
+        ui.substep(f"{spec.service} ({spec.repo_root.name})")
+        names.append(spec.service)
+    return names
 
 
 def git_tag_at_head(repo: Path) -> str:
@@ -465,10 +470,23 @@ def _select_registries_interactive(saved: dict[str, object] | None) -> list[str]
         "gitea": "Gitea (git.fromchat.ru/fromchat/*)",
     }
     for name in ("dockerhub", "github", "gitea"):
-        default_on = name in saved_set if has_saved else False
-        if Confirm.ask(f"  Push to {labels[name]}?", default=default_on):
+        default_on = name in saved_set if has_saved else name == "dockerhub"
+        if _confirm(f"Push to {labels[name]}?", default=default_on):
             selected.append(name)
     return selected
+
+
+def _saved_registries(saved: dict[str, object] | None) -> list[str]:
+    if not isinstance(saved, dict):
+        return []
+    regs = saved.get("registries")
+    if not isinstance(regs, list):
+        return []
+    out: list[str] = []
+    for name in regs:
+        if isinstance(name, str) and name in REGISTRIES and name not in out:
+            out.append(name)
+    return out
 
 
 def _prompt_creds(registry: Registry, saved: dict[str, str]) -> Creds:
@@ -743,7 +761,7 @@ def verify_dockerhub_tags_free(
                 "Delete them on Docker Hub, bump the git tag, or run interactively."
             )
             raise SystemExit(1)
-        if not Confirm.ask(
+        if not _confirm(
             f"Delete all {len(conflicts)} conflicting tag(s) on Docker Hub and continue?",
             default=False,
         ):
@@ -938,10 +956,9 @@ def _run(argv: list[str] | None = None) -> None:
     if args.services:
         selected_names = parse_services_csv(args.services, allowed)
     elif sys.stdin.isatty() and sys.stdout.isatty():
-        selected_names = select_services_interactive(all_specs, saved)
+        selected_names = list_all_services(all_specs)
     else:
-        ui.error("No TTY — pass --services (comma-separated compose service names).")
-        raise SystemExit(1)
+        selected_names = [s.service for s in all_specs]
 
     specs = [s for s in all_specs if s.service in selected_names]
 
@@ -951,10 +968,21 @@ def _run(argv: list[str] | None = None) -> None:
         parsed = _parse_push_list(args.push)
         if parsed is not None:
             push_to = parsed
-        elif sys.stdin.isatty() and sys.stdout.isatty():
-            push_to = _select_registries_interactive(saved)
         else:
-            push_to = []
+            push_to = _saved_registries(saved)
+            if push_to:
+                ui.step("Push destinations (saved)")
+                labels = {
+                    "dockerhub": "Docker Hub (fromchat/*)",
+                    "github": "GitHub Packages (ghcr.io/fromchat-messenger/*)",
+                    "gitea": "Gitea (git.fromchat.ru/fromchat/*)",
+                }
+                for name in push_to:
+                    ui.substep(labels.get(name, name))
+            elif sys.stdin.isatty() and sys.stdout.isatty():
+                push_to = _select_registries_interactive(saved)
+            else:
+                push_to = []
 
     ensure_daemon()
     ensure_buildx(use_compose_build=False)
