@@ -23,6 +23,7 @@ services:
       - 8300:8300
     volumes:
       - ./data/prod:/app/data
+      - ./data/prod/files:/app/files
       - ./firebase-cert.json:/app/firebase-cert.json:ro
     networks:
       - public
@@ -116,28 +117,6 @@ services:
     networks:
       - public
     image: fromchat/livekit:v1.0
-  caddy:
-    ports:
-      - 127.0.0.1:8080:8080
-      - 127.0.0.1:8443:8443
-    extra_hosts:
-      - host.docker.internal:host-gateway
-    volumes:
-      - ./data/prod/caddy/data:/data
-      - ./data/prod/caddy/config:/config
-    networks:
-      - public
-    restart: always
-    image: fromchat/caddy:v1.0
-    depends_on:
-      - web
-  haproxy:
-    network_mode: host
-    user: 0:0
-    depends_on:
-      - caddy
-    restart: always
-    image: fromchat/haproxy:v1.0
   postgres:
     env_file:
       - .env
@@ -163,6 +142,28 @@ services:
       retries: 15
     restart: always
     image: fromchat/postgres:v1.0
+  caddy:
+    ports:
+      - 127.0.0.1:8080:8080
+      - 127.0.0.1:8443:8443
+    extra_hosts:
+      - host.docker.internal:host-gateway
+    volumes:
+      - ./data/prod/caddy/data:/data
+      - ./data/prod/caddy/config:/config
+    networks:
+      - public
+    restart: always
+    image: fromchat/caddy:v1.0
+    depends_on:
+      - web
+  haproxy:
+    network_mode: host
+    user: 0:0
+    depends_on:
+      - caddy
+    restart: always
+    image: fromchat/haproxy:v1.0
   web:
     env_file:
       - .env
