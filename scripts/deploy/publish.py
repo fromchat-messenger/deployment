@@ -384,6 +384,16 @@ def prompt_services_interactive(specs: list[ImageSpec]) -> list[str]:
     return selected
 
 
+def git_fetch_tags(repo: Path) -> None:
+    """Update local tags from remotes without rewriting other refs."""
+    subprocess.run(
+        ["git", "fetch", "--tags"],
+        cwd=repo,
+        capture_output=True,
+        text=True,
+    )
+
+
 def git_tag_at_head(repo: Path) -> str:
     p = subprocess.run(
         ["git", "tag", "--points-at", "HEAD"],
@@ -470,6 +480,7 @@ def _resolve_tags(specs: list[ImageSpec]) -> dict[Path, str]:
     repos: dict[Path, str] = {}
     for spec in specs:
         if spec.repo_root not in repos:
+            git_fetch_tags(spec.repo_root)
             tag = git_tag_at_head(spec.repo_root)
             repos[spec.repo_root] = tag
             ui.substep(f"{spec.repo_root.name}: {tag}")
