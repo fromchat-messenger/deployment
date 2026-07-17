@@ -114,7 +114,7 @@ def load_settings(paths: ProjectPaths, argv: list[str]) -> DeploySettings:
         if arg in ("-h", "--help"):
             sys.stdout.write(
                 "Usage: deploy.sh [user@host] [deploy_path] [platform] "
-                "[--components backend,frontend,caddy,updater] [--tag TAG]\n"
+                "[--components backend,frontend,caddy,updater,chat_filter] [--tag TAG]\n"
                 "  Interactive component menu when --components is omitted.\n"
                 "  Or set DEPLOYMENT_SERVER in .env\n"
                 "  Paths: FROMCHAT_BACKEND_DIR, FROMCHAT_WEB_DIR, FROMCHAT_UPDATER_DIR\n"
@@ -217,6 +217,12 @@ def load_settings(paths: ProjectPaths, argv: list[str]) -> DeploySettings:
         sys.stderr.write(
             "Updater component selected but ../updater not found.\n"
             "Set FROMCHAT_UPDATER_DIR to the updater repo.\n"
+        )
+        raise SystemExit(1)
+    if "chat_filter" in components and "backend" not in components:
+        sys.stderr.write(
+            "Chat filter requires the backend component "
+            "(built from backend src/Dockerfile target chat_filter).\n"
         )
         raise SystemExit(1)
 

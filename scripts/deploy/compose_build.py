@@ -29,6 +29,7 @@ FROMCHAT_IMAGE_SERVICES = frozenset(
         "web",
         "caddy",
         "updater",
+        "chat_filter",
         "livekit",
         "haproxy",
     }
@@ -277,6 +278,7 @@ def _generate_compose(
     output: Path,
     keep_build: bool,
     include_updater: bool,
+    include_chat_filter: bool = False,
 ) -> None:
     cmd = [
         sys.executable,
@@ -304,6 +306,8 @@ def _generate_compose(
         cmd.append("--include-updater")
         if paths.updater_dir:
             cmd.extend(["--updater-root", str(paths.updater_dir)])
+    if include_chat_filter:
+        cmd.append("--include-chat-filter")
     if subprocess.run(cmd).returncode != 0:
         ui.error("generate-compose.py failed")
         sys.exit(1)
@@ -316,6 +320,7 @@ def generate_build_compose(
     tag: str,
     output: Path,
     include_updater: bool,
+    include_chat_filter: bool = False,
 ) -> None:
     ui.step("Generating build compose")
     _generate_compose(
@@ -325,6 +330,7 @@ def generate_build_compose(
         output=output,
         keep_build=True,
         include_updater=include_updater,
+        include_chat_filter=include_chat_filter,
     )
 
 
@@ -335,6 +341,7 @@ def generate_production_compose(
     tag: str,
     output: Path,
     include_updater: bool = False,
+    include_chat_filter: bool = False,
 ) -> None:
     ui.step("Generating production compose.yml")
     _generate_compose(
@@ -344,4 +351,5 @@ def generate_production_compose(
         output=output,
         keep_build=False,
         include_updater=include_updater,
+        include_chat_filter=include_chat_filter,
     )

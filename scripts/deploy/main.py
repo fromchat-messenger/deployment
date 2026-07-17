@@ -38,6 +38,7 @@ def _prepare_build_dir(
     tag: str,
     *,
     include_updater: bool,
+    include_chat_filter: bool = False,
 ) -> Path:
     build_dir = paths.local_cache_root / "build"
     if build_dir.exists():
@@ -54,6 +55,7 @@ def _prepare_build_dir(
         tag=tag,
         output=build_dir / BUILD_COMPOSE_FILE,
         include_updater=include_updater,
+        include_chat_filter=include_chat_filter,
     )
     return build_dir
 
@@ -64,13 +66,14 @@ def _prepare_staging(
     tag: str,
     *,
     include_updater: bool,
+    include_chat_filter: bool = False,
 ) -> Path:
     staging = paths.staging_dir
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
 
-    if compose_components or include_updater:
+    if compose_components or include_updater or include_chat_filter:
         env_src = paths.deploy_env_source()
         if env_src:
             shutil.copy2(env_src, staging / ".env")
@@ -90,6 +93,7 @@ def _prepare_staging(
             tag=tag,
             output=staging / "compose.yml",
             include_updater=include_updater,
+            include_chat_filter=include_chat_filter,
         )
         (staging / ".fromchat-version").write_text(tag + "\n", encoding="utf-8")
 
@@ -133,10 +137,11 @@ def main() -> None:
 
         stack = settings.compose_components
         include_updater = "updater" in settings.components
+        include_chat_filter = "chat_filter" in settings.components
         if stack and "backend" in stack and not paths.deploy_env_source():
             ui.error(
                 "Missing deployment/.env.prod for backend deploy. "
-                "Create it (e.g. npm run generate:env from backend, output ../deployment/.env.prod) before deploying."
+                "Create it (e.g. bash scripts/generate-env.sh from backend, output ../deployment/.env.prod) before deploying."
             )
             raise SystemExit(1)
 
@@ -156,7 +161,7 @@ def main() -> None:
             use_docker_build=settings.use_docker_build,
         )
 
-        if not stack and not include_updater:
+        if not stack and not include_updater and not include_chat_filter:
             ui.error("No components selected")
             raise SystemExit(1)
 
@@ -165,6 +170,7 @@ def main() -> None:
             stack,
             settings.tag,
             include_updater=include_updater,
+            include_chat_filter=include_chat_filter,
         )
         build_services = build_phase.list_build_services(build_dir)
         if not build_services:
@@ -182,6 +188,7 @@ def main() -> None:
             stack,
             settings.tag,
             include_updater=include_updater,
+            include_chat_filter=include_chat_filter,
         )
 
         ui.deploy_banner(settings.server)
@@ -189,7 +196,7 @@ def main() -> None:
 
         images_to_transfer: list[str] = []
 
-        if stack or include_updater:
+        if stack or include_updater or include_chat_filter:
             generated = _load_generated_compose(staging)
             services = list((generated.get("services") or {}).keys())
             local_tags = local_docker_image_tags()
@@ -206,7 +213,7 @@ def main() -> None:
         images_to_transfer = dedupe_preserve(images_to_transfer)
         transfer.pussh_images(creds, images_to_transfer)
 
-        if stack or include_updater:
+        if stack or include_updater or include_chat_filter:
             transfer.rsync_staging(creds, deploy_resolved, staging)
             if stack:
                 transfer.copy_env_to_server(creds, deploy_resolved)
@@ -219,7 +226,7 @@ def main() -> None:
                 )
             if "backend" in stack:
                 deploy_resolved = transfer.sync_firebase_cert(creds, deploy_resolved)
-            if stack or include_updater:
+            if stack or include_updater or include_chat_filter:
                 transfer.run_remote_compose_up(creds, deploy_resolved)
 
         print()

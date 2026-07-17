@@ -46,11 +46,18 @@ fi
 
 mkdir -p "$REMOTE_DEPLOY_PATH/config" \
     "$REMOTE_DEPLOY_PATH/data/prod/files" \
+    "$REMOTE_DEPLOY_PATH/data/prod/logs" \
     "$REMOTE_DEPLOY_PATH/data/prod/logs/messaging" \
     "$REMOTE_DEPLOY_PATH/data/prod/logs/file_storage" \
-    "$REMOTE_DEPLOY_PATH/data/prod/postgres" \
+    "$REMOTE_DEPLOY_PATH/data/prod/uploads" \
+    "$REMOTE_DEPLOY_PATH/data/prod/downloads" \
+    "$REMOTE_DEPLOY_PATH/data/postgres" \
     "$REMOTE_DEPLOY_PATH/data/prod/caddy/data" \
     "$REMOTE_DEPLOY_PATH/data/prod/caddy/config"
+# Stable instance id file for bind-mount (create once if missing)
+if [ ! -f "$REMOTE_DEPLOY_PATH/data/prod/instance_id" ]; then
+    touch "$REMOTE_DEPLOY_PATH/data/prod/instance_id"
+fi
 cd "$REMOTE_DEPLOY_PATH"
 
 # Match container UIDs (app=1000, messaging=1001, filestorage=1002).
@@ -308,7 +315,7 @@ echo {pw} | sudo -S -p '' chown -R $(whoami):$(whoami) {d_root} 2>/dev/null || t
         if not env_src:
             ui.error(
                 "Missing deployment/.env.prod for deploy. "
-                "Create it (e.g. npm run generate:env from backend, output ../deployment/.env.prod) before deploying."
+                "Create it (e.g. bash scripts/generate-env.sh from backend, output ../deployment/.env.prod) before deploying."
             )
             raise SystemExit(1)
         ui.substep(f"Copying {env_src.name} to server .env...")

@@ -14,6 +14,8 @@ COMPONENT_OPTIONS: list[tuple[str, str, bool]] = [
     ("caddy", "Caddy reverse proxy (TLS)", True),
     # Updater is opt-in — Enter / default skips it.
     ("updater", "Auto-update service", False),
+    # Chat filter is opt-in; without it deploy sets ENABLE_CHAT_FILTER=0 on the backend.
+    ("chat_filter", "Chat content filter service", False),
 ]
 
 ALLOWED = {name for name, _, _ in COMPONENT_OPTIONS}
@@ -58,5 +60,5 @@ def select_components_interactive() -> list[str]:
 
 
 def compose_components(selected: list[str]) -> list[str]:
-    """Components that go into the merged stack compose (excludes updater)."""
-    return [c for c in selected if c != "updater"]
+    """Components that go into the merged stack compose (excludes updater / chat_filter flags)."""
+    return [c for c in selected if c not in {"updater", "chat_filter"}]

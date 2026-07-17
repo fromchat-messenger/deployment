@@ -122,7 +122,7 @@ get_latest_semver_tag() {
 }
 
 select_components() {
-  local -a options=(backend frontend caddy updater)
+  local -a options=(backend frontend caddy updater chat_filter)
   local -a labels=(
     "Backend (API, DB, LiveKit)"
     "Web frontend"
@@ -239,7 +239,7 @@ run_generate_compose() {
   fi
 
   local stack_csv
-  stack_csv="$(echo "${components_csv}" | tr ',' '\n' | grep -v '^updater$' | paste -sd, - || true)"
+  stack_csv="$(echo "${components_csv}" | tr ',' '\n' | grep -vE '^(updater|chat_filter)$' | paste -sd, - || true)"
   [[ -n "${stack_csv}" ]] || stack_csv="backend"
 
   local -a gen_args=(
@@ -262,6 +262,9 @@ run_generate_compose() {
     if [[ -d "${DEPLOYMENT_ROOT}/../updater" ]]; then
       gen_args+=(--updater-root "${DEPLOYMENT_ROOT}/../updater")
     fi
+  fi
+  if [[ ",${components_csv}," == *,chat_filter,* ]]; then
+    gen_args+=(--include-chat-filter)
   fi
   "${gen_args[@]}"
 

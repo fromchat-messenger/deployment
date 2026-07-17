@@ -24,6 +24,7 @@ FROMCHAT_IMAGE_SERVICES = frozenset(
         "web",
         "caddy",
         "updater",
+        "chat_filter",
         "livekit",
         "haproxy",
     }
@@ -34,8 +35,9 @@ BACKEND_SERVICES = frozenset(
 )
 FRONTEND_SERVICES = frozenset({"web"})
 UPDATER_SERVICES = frozenset({"updater"})
+CHAT_FILTER_SERVICES = frozenset({"chat_filter"})
 BACKEND_BUILD_SERVICES = frozenset(
-    {"backend", "messaging", "file_storage", "postgres", "caddy", "livekit", "haproxy"}
+    {"backend", "messaging", "file_storage", "postgres", "caddy", "livekit", "haproxy", "chat_filter"}
 )
 CADDY_STACK_SERVICES = frozenset({"caddy", "haproxy"})
 
@@ -191,6 +193,66 @@ def patch_updater_service(service: dict[str, Any], *, keep_build: bool) -> None:
     service["pull_policy"] = "never"
 
 
+def load_chat_filter_service(backend_compose: Path | None) -> dict[str, Any]:
+    """Load chat_filter from backend compose (shared src/Dockerfile target)."""
+    if backend_compose is not None and backend_compose.is_file():
+        doc = load_yaml(backend_compose)
+        svc = (doc.get("services") or {}).get("chat_filter")
+        if isinstance(svc, dict):
+            out = copy.deepcopy(svc)
+            out.pop("profiles", None)
+            out.pop("develop", None)
+            return out
+    return {
+        "build": {
+            "context": ".",
+            "dockerfile": "src/Dockerfile",
+            "target": "chat_filter",
+        },
+        "restart": "always",
+        "environment": {"PORT": 8305, "DATA_DIR": "/data"},
+        "networks": ["services"],
+    }
+
+
+def patch_chat_filter_service(service: dict[str, Any], *, keep_build: bool) -> None:
+    """Attach to the backend internal services network (not a separate network)."""
+    service.pop("profiles", None)
+    service.pop("develop", None)
+    service["networks"] = ["services"]
+    service.setdefault("restart", "always")
+    service.setdefault(
+        "environment",
+        {"PORT": 8305, "DATA_DIR": "/data"},
+    )
+    if not keep_build:
+        service["pull_policy"] = "never"
+
+
+def patch_backend_chat_filter(services: dict[str, Any], *, enabled: bool) -> None:
+    """Set ENABLE_CHAT_FILTER on backend; wire depends_on when the sidecar is included."""
+    backend = services.get("backend")
+    if not isinstance(backend, dict):
+        return
+    env = backend.setdefault("environment", {})
+    if isinstance(env, dict):
+        env.pop("FILE_STORAGE_URL", None)
+        env["ENABLE_CHAT_FILTER"] = "1" if enabled else "0"
+        if not enabled:
+            env.pop("CHAT_FILTER_URL", None)
+    if not enabled:
+        return
+    deps = backend.get("depends_on")
+    if deps is None:
+        backend["depends_on"] = {
+            "chat_filter": {"condition": "service_healthy"},
+        }
+    elif isinstance(deps, dict):
+        deps["chat_filter"] = {"condition": "service_healthy"}
+    elif isinstance(deps, list) and "chat_filter" not in deps:
+        deps.append("chat_filter")
+
+
 def filter_services(
     services: dict[str, Any],
     enabled: set[str],
@@ -211,6 +273,7 @@ def generate(
     web_root: Path | None = None,
     updater_root: Path | None = None,
     include_updater: bool = False,
+    include_chat_filter: bool = False,
 ) -> None:
     merged: dict[str, Any] = {"services": {}, "networks": {}, "volumes": {}}
 
@@ -224,6 +287,8 @@ def generate(
         enabled |= FRONTEND_SERVICES
     if include_updater:
         enabled |= UPDATER_SERVICES
+    if include_chat_filter:
+        enabled |= CHAT_FILTER_SERVICES
 
     sources: list[Path] = []
     if backend_compose and backend_compose.is_file():
@@ -239,7 +304,7 @@ def generate(
     if frontend_compose and frontend_compose.is_file():
         sources.append(frontend_compose)
 
-    if not sources and not include_updater:
+    if not sources and not include_updater and not include_chat_filter:
         raise SystemExit("No compose inputs found.")
 
     for src in sources:
@@ -254,6 +319,15 @@ def generate(
             merged.get("networks") or {},
             load_updater_networks(updater_root),
         )
+
+    if include_chat_filter:
+        # Prefer definition already merged from backend compose; fall back to loader.
+        if "chat_filter" not in services:
+            services["chat_filter"] = load_chat_filter_service(backend_compose)
+        patch_chat_filter_service(services["chat_filter"], keep_build=keep_build)
+
+    if "backend" in services:
+        patch_backend_chat_filter(services, enabled=include_chat_filter)
 
     services = filter_services(services, enabled)
 
@@ -295,6 +369,10 @@ def generate(
             if isinstance(cfg, dict):
                 cfg["restart"] = "always"
 
+    # Re-apply chat filter toggle after filter_services (backend may have been kept)
+    if "backend" in services:
+        patch_backend_chat_filter(services, enabled=include_chat_filter)
+
     merged["services"] = services
     if not merged.get("networks"):
         merged.pop("networks", None)
@@ -327,6 +405,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--web-root", type=Path, default=None)
     parser.add_argument("--updater-root", type=Path, default=None)
     parser.add_argument("--include-updater", action="store_true")
+    parser.add_argument("--include-chat-filter", action="store_true")
     return parser.parse_args()
 
 
@@ -345,6 +424,7 @@ def main() -> None:
         web_root=args.web_root,
         updater_root=args.updater_root,
         include_updater=args.include_updater,
+        include_chat_filter=args.include_chat_filter,
     )
 
 

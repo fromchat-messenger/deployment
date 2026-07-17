@@ -200,7 +200,7 @@ run_env_generator() {
   sudo -u "${real_user}" \
     env FROMCHAT_ENV_OUT="${install_dir}/.env" \
         FROMCHAT_COMPLIANCE_OUT="${install_dir}/compliance_keypair.txt" \
-        bash "${backend_dir}/scripts/generate:env.sh"
+        bash "${backend_dir}/scripts/generate-env.sh"
 
   [[ -f "${install_dir}/.env" ]] || die ".env was not created."
   success ".env written to ${install_dir}/.env"
