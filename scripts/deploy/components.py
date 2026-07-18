@@ -14,8 +14,8 @@ COMPONENT_OPTIONS: list[tuple[str, str, bool]] = [
     ("caddy", "Caddy reverse proxy (TLS)", True),
     # Updater is opt-in — Enter / default skips it.
     ("updater", "Auto-update service", False),
-    # Chat filter is opt-in; without it deploy sets ENABLE_CHAT_FILTER=0 on the backend.
-    ("chat_filter", "Chat content filter service", False),
+    # Chat filter is on by default; opt out only if you intentionally disable moderation.
+    ("chat_filter", "Chat content filter service", True),
 ]
 
 ALLOWED = {name for name, _, _ in COMPONENT_OPTIONS}

@@ -54,7 +54,7 @@ cd deployment
 ./deploy.sh user@host ~/fromchat-server linux/arm64 --tag latest
 # optional:
 ./deploy.sh user@host ~/fromchat-server linux/amd64 \
-  --components backend,frontend,caddy,updater --tag v1.0
+  --components backend,frontend,caddy,chat_filter,updater --tag v1.0
 ```
 
 - Interactive component menu if `--components` is omitted

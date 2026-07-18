@@ -390,7 +390,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--components",
         required=True,
-        help="Comma-separated: backend,frontend,caddy",
+        help="Comma-separated: backend,frontend,caddy (pass --include-chat-filter for the filter sidecar)",
     )
     parser.add_argument("--backend-compose", type=Path, default=None)
     parser.add_argument("--backend-compose-prod", type=Path, default=None)

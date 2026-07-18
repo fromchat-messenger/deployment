@@ -38,7 +38,7 @@ dump_yaml_str = _generate_compose.dump_yaml_str
 
 DEFAULT_BACKEND_REPO = "https://github.com/fromchat-messenger/backend.git"
 DEFAULT_WEB_REPO = "https://github.com/fromchat-messenger/web.git"
-DEFAULT_COMPONENTS = ("backend", "frontend", "caddy")
+DEFAULT_COMPONENTS = ("backend", "frontend", "caddy", "chat_filter")
 
 FULL_STACK_PACKAGES = (
     "backend",
@@ -179,7 +179,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--components",
         default=",".join(DEFAULT_COMPONENTS),
-        help="Comma-separated components (default: backend,frontend,caddy)",
+        help="Comma-separated components (default: backend,frontend,caddy,chat_filter)",
     )
     return parser.parse_args()
 

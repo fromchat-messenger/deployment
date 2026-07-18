@@ -177,7 +177,7 @@ def load_settings(paths: ProjectPaths, argv: list[str]) -> DeploySettings:
         elif interactive and sys.stdin.isatty():
             components = select_components_interactive()
         else:
-            components = parse_components_csv("backend,frontend")
+            components = parse_components_csv("backend,frontend,caddy,chat_filter")
     except KeyboardInterrupt:
         _persist_partial(
             paths,

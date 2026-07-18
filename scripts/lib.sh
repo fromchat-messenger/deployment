@@ -128,9 +128,10 @@ select_components() {
     "Web frontend"
     "Caddy reverse proxy (TLS)"
     "Auto-update service"
+    "Chat content filter service"
   )
-  # Updater is opt-in — Enter defaults to No.
-  local -a defaults=(Y Y Y N)
+  # Updater opt-in (N); chat filter on by default (Y).
+  local -a defaults=(Y Y Y N Y)
   SELECTED=()
   local i choice hint
   step "Select components"
