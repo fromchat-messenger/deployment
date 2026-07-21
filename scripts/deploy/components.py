@@ -11,6 +11,7 @@ import deploy.ui as ui
 COMPONENT_OPTIONS: list[tuple[str, str, bool]] = [
     ("backend", "Backend (API, DB, LiveKit)", True),
     ("frontend", "Web frontend", True),
+    ("admin", "Admin dashboard", True),
     ("caddy", "Caddy reverse proxy (TLS)", True),
     # Updater is opt-in — Enter / default skips it.
     ("updater", "Auto-update service", False),

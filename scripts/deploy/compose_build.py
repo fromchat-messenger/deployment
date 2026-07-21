@@ -302,6 +302,9 @@ def _generate_compose(
     if "frontend" in components and paths.web_dir:
         cmd.extend(["--frontend-compose", str(paths.web_dir / "compose.yml")])
         cmd.extend(["--web-root", str(paths.web_dir)])
+    if "admin" in components and paths.admin_dir:
+        cmd.extend(["--admin-compose", str(paths.admin_dir / "compose.yml")])
+        cmd.extend(["--admin-root", str(paths.admin_dir)])
     if include_updater:
         cmd.append("--include-updater")
         if paths.updater_dir:

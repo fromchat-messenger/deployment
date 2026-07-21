@@ -35,6 +35,7 @@ class ProjectPaths:
     scripts_dir: Path
     backend_dir: Path | None
     web_dir: Path | None
+    admin_dir: Path | None
     updater_dir: Path | None
     caddy_build_dir: Path | None
     env_file: Path
@@ -61,6 +62,11 @@ class ProjectPaths:
             str(parent / "Web"),
             str(parent / "web"),
         )
+        admin = _find_repo_with_compose(
+            os.environ.get("FROMCHAT_ADMIN_DIR", ""),
+            str(parent / "admin"),
+            str(parent / "Admin"),
+        )
         updater = _find_dir(
             os.environ.get("FROMCHAT_UPDATER_DIR", ""),
             str(parent / "updater"),
@@ -80,6 +86,7 @@ class ProjectPaths:
             scripts_dir=scripts_dir,
             backend_dir=backend,
             web_dir=web,
+            admin_dir=admin,
             updater_dir=updater,
             caddy_build_dir=caddy_build,
             env_file=env_file,
@@ -95,6 +102,8 @@ class ProjectPaths:
             return self.backend_dir / "compose.yml"
         if component == "frontend" and self.web_dir:
             return self.web_dir / "compose.yml"
+        if component == "admin" and self.admin_dir:
+            return self.admin_dir / "compose.yml"
         return None
 
     def project_root_for(self, component: str) -> Path | None:
@@ -102,6 +111,8 @@ class ProjectPaths:
             return self.backend_dir
         if component == "frontend":
             return self.web_dir
+        if component == "admin":
+            return self.admin_dir
         return None
 
     def deploy_env_source(self) -> Path | None:

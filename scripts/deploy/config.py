@@ -207,6 +207,12 @@ def load_settings(paths: ProjectPaths, argv: list[str]) -> DeploySettings:
             "Set FROMCHAT_WEB_DIR or keep a sibling ../Web with compose.yml.\n"
         )
         raise SystemExit(1)
+    if "admin" in components and not paths.admin_dir:
+        sys.stderr.write(
+            "Admin component selected but admin repo not found.\n"
+            "Set FROMCHAT_ADMIN_DIR or keep a sibling ../admin with compose.yml.\n"
+        )
+        raise SystemExit(1)
     if "caddy" in components and not paths.caddy_build_dir:
         sys.stderr.write(
             "Caddy component selected but backend/src/caddy not found.\n"

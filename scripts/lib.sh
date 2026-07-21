@@ -122,16 +122,17 @@ get_latest_semver_tag() {
 }
 
 select_components() {
-  local -a options=(backend frontend caddy updater chat_filter)
+  local -a options=(backend frontend admin caddy updater chat_filter)
   local -a labels=(
     "Backend (API, DB, LiveKit)"
     "Web frontend"
+    "Admin dashboard"
     "Caddy reverse proxy (TLS)"
     "Auto-update service"
     "Chat content filter service"
   )
   # Updater opt-in (N); chat filter on by default (Y).
-  local -a defaults=(Y Y Y N Y)
+  local -a defaults=(Y Y Y Y N Y)
   SELECTED=()
   local i choice hint
   step "Select components"
@@ -203,9 +204,10 @@ run_generate_compose() {
 
   step "Generating compose.yml for tag ${tag} (components: ${components_csv})…"
 
-  local need_backend=false need_frontend=false need_caddy=false
+  local need_backend=false need_frontend=false need_admin=false need_caddy=false
   [[ ",${components_csv}," == *,backend,* ]] && need_backend=true
   [[ ",${components_csv}," == *,frontend,* ]] && need_frontend=true
+  [[ ",${components_csv}," == *,admin,* ]] && need_admin=true
   [[ ",${components_csv}," == *,caddy,* ]] && need_caddy=true
 
   if ${need_backend}; then
@@ -238,6 +240,21 @@ run_generate_compose() {
       success "Frontend compose.yml"
     fi
   fi
+  if ${need_admin}; then
+    if [[ -n "${LOCAL_ADMIN_COMPOSE:-}" && -f "${LOCAL_ADMIN_COMPOSE}" ]]; then
+      cp -f "${LOCAL_ADMIN_COMPOSE}" "${tmp}/admin.compose.yml"
+      success "Admin compose.yml (local)"
+    elif [[ -f "${DEPLOYMENT_ROOT}/../admin/compose.yml" ]]; then
+      cp -f "${DEPLOYMENT_ROOT}/../admin/compose.yml" "${tmp}/admin.compose.yml"
+      success "Admin compose.yml (sibling)"
+    elif [[ -n "${ADMIN_REPO:-}" ]]; then
+      fetch_raw_file "${ADMIN_REPO}" "${tag}" "compose.yml" \
+        "${tmp}/admin.compose.yml"
+      success "Admin compose.yml"
+    else
+      die "Admin component selected but admin compose.yml not found (set LOCAL_ADMIN_COMPOSE or ADMIN_REPO)"
+    fi
+  fi
 
   local stack_csv
   stack_csv="$(echo "${components_csv}" | tr ',' '\n' | grep -vE '^(updater|chat_filter)$' | paste -sd, - || true)"
@@ -257,6 +274,9 @@ run_generate_compose() {
   fi
   if ${need_frontend}; then
     gen_args+=(--frontend-compose "${tmp}/frontend.compose.yml")
+  fi
+  if ${need_admin}; then
+    gen_args+=(--admin-compose "${tmp}/admin.compose.yml")
   fi
   if [[ ",${components_csv}," == *,updater,* ]]; then
     gen_args+=(--include-updater)
