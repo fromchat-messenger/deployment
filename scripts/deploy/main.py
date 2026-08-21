@@ -60,6 +60,32 @@ def _prepare_build_dir(
     return build_dir
 
 
+def _stage_caddy_additions(paths: ProjectPaths, staging: Path) -> None:
+    """Copy backend src/caddy/additions into staging for rsync (not under data/)."""
+    dest = staging / "caddy" / "additions"
+    dest.mkdir(parents=True, exist_ok=True)
+    src = None
+    if paths.caddy_build_dir is not None:
+        candidate = paths.caddy_build_dir / "additions"
+        if candidate.is_dir():
+            src = candidate
+    if src is None:
+        ui.substep("Caddy additions: none (empty ./caddy/additions on server)")
+        return
+    copied = 0
+    for path in sorted(src.iterdir()):
+        if not path.is_file():
+            continue
+        if path.name.startswith("."):
+            continue
+        shutil.copy2(path, dest / path.name)
+        copied += 1
+    if copied:
+        ui.substep(f"Caddy additions: staged {copied} file(s) → caddy/additions/")
+    else:
+        ui.substep("Caddy additions: directory empty (only dotfiles skipped)")
+
+
 def _prepare_staging(
     paths: ProjectPaths,
     compose_components: list[str],
@@ -96,6 +122,9 @@ def _prepare_staging(
             include_chat_filter=include_chat_filter,
         )
         (staging / ".fromchat-version").write_text(tag + "\n", encoding="utf-8")
+
+        if "caddy" in compose_components:
+            _stage_caddy_additions(paths, staging)
 
     return staging
 

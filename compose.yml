@@ -152,6 +152,7 @@ services:
     volumes:
       - ./data/prod/caddy/data:/data
       - ./data/prod/caddy/config:/config
+      - ./caddy/additions:/etc/caddy/additions:ro
     networks:
       - public
     restart: always

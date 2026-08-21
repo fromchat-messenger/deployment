@@ -186,7 +186,7 @@ print_success_banner() {
   info "Manage stack:      cd ${dir} && docker compose ps"
   info "View logs:         cd ${dir} && docker compose logs -f"
   if component_selected caddy; then
-    info "Caddy: baked into fromchat/caddy image (backend/src/caddy/Caddyfile)"
+    info "Caddy: base Caddyfile is in fromchat/caddy; extras from ./caddy/additions"
   fi
 }
 

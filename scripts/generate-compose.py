@@ -109,6 +109,49 @@ def replace_build_with_image(
         del service["build"]
 
 
+def patch_caddy_additions_volume(
+    service: dict[str, Any],
+    *,
+    keep_build: bool,
+    backend_root: Path | None = None,
+) -> None:
+    """Runtime additions must not come from the image.
+
+    Local builds bind-mount backend src/caddy/additions.
+    Published/deploy compose bind-mounts ./caddy/additions (filled by deploy staging).
+    """
+    volumes = service.get("volumes")
+    if not isinstance(volumes, list):
+        volumes = []
+        service["volumes"] = volumes
+
+    additions_bind_prefix = "./src/caddy/additions:"
+    filtered = [
+        v
+        for v in volumes
+        if not (
+            isinstance(v, str)
+            and (
+                v.startswith(additions_bind_prefix)
+                or v.startswith("./caddy/additions:")
+                or v.endswith(":/etc/caddy/additions:ro")
+                or v.endswith(":/etc/caddy/additions")
+                or v == "/etc/caddy/additions"
+            )
+        )
+    ]
+    if keep_build:
+        host = (
+            str((backend_root / "src" / "caddy" / "additions").resolve())
+            if backend_root is not None
+            else "./src/caddy/additions"
+        )
+        filtered.append(f"{host}:/etc/caddy/additions:ro")
+    else:
+        filtered.append("./caddy/additions:/etc/caddy/additions:ro")
+    service["volumes"] = filtered
+
+
 def patch_build_roots(
     services: dict[str, Any],
     *,
@@ -334,12 +377,16 @@ def generate(
     for name, cfg in services.items():
         strip_dev_keys(cfg)
         replace_build_with_image(name, cfg, tag, keep_build=keep_build)
-        if name == "caddy" and "web" in services:
-            deps = cfg.get("depends_on")
-            if isinstance(deps, list) and "web" not in deps:
-                deps.append("web")
-            elif deps is None:
-                cfg["depends_on"] = ["web"]
+        if name == "caddy":
+            patch_caddy_additions_volume(
+                cfg, keep_build=keep_build, backend_root=backend_root
+            )
+            if "web" in services:
+                deps = cfg.get("depends_on")
+                if isinstance(deps, list) and "web" not in deps:
+                    deps.append("web")
+                elif deps is None:
+                    cfg["depends_on"] = ["web"]
         if name == "haproxy" and "caddy" in services:
             cfg.setdefault("depends_on", ["caddy"])
 

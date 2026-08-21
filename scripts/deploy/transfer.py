@@ -53,7 +53,8 @@ mkdir -p "$REMOTE_DEPLOY_PATH/config" \
     "$REMOTE_DEPLOY_PATH/data/prod/downloads" \
     "$REMOTE_DEPLOY_PATH/data/postgres" \
     "$REMOTE_DEPLOY_PATH/data/prod/caddy/data" \
-    "$REMOTE_DEPLOY_PATH/data/prod/caddy/config"
+    "$REMOTE_DEPLOY_PATH/data/prod/caddy/config" \
+    "$REMOTE_DEPLOY_PATH/caddy/additions"
 # Stable instance id file for bind-mount (create once if missing)
 if [ ! -f "$REMOTE_DEPLOY_PATH/data/prod/instance_id" ]; then
     touch "$REMOTE_DEPLOY_PATH/data/prod/instance_id"
