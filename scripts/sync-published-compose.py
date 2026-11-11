@@ -38,7 +38,8 @@ dump_yaml_str = _generate_compose.dump_yaml_str
 
 DEFAULT_BACKEND_REPO = "https://github.com/fromchat-messenger/backend.git"
 DEFAULT_WEB_REPO = "https://github.com/fromchat-messenger/web.git"
-DEFAULT_COMPONENTS = ("backend", "frontend", "caddy", "chat_filter")
+DEFAULT_ADMIN_REPO = "https://github.com/fromchat-messenger/admin.git"
+DEFAULT_COMPONENTS = ("backend", "frontend", "admin", "caddy", "chat_filter")
 
 FULL_STACK_PACKAGES = (
     "backend",
@@ -46,6 +47,7 @@ FULL_STACK_PACKAGES = (
     "file_storage",
     "postgres",
     "web",
+    "admin",
     "caddy",
     "livekit",
     "haproxy",
@@ -77,11 +79,13 @@ def packages_ready(tag: str) -> bool:
 def resolve_latest_published_tag(
     backend_repo: str,
     web_repo: str,
+    admin_repo: str,
     token: str | None,
 ) -> str | None:
     backend_tags = fetch_semver_tags(backend_repo, token)
     web_tags = fetch_semver_tags(web_repo, token)
-    common = backend_tags & web_tags
+    admin_tags = fetch_semver_tags(admin_repo, token)
+    common = backend_tags & web_tags & admin_tags
     if not common:
         return None
     for tag in sorted(common, key=semver_key, reverse=True):
@@ -107,10 +111,11 @@ def sync_published_compose(
     output: Path,
     backend_repo: str,
     web_repo: str,
+    admin_repo: str,
     token: str | None,
     components: tuple[str, ...] = DEFAULT_COMPONENTS,
 ) -> str | None:
-    tag = resolve_latest_published_tag(backend_repo, web_repo, token)
+    tag = resolve_latest_published_tag(backend_repo, web_repo, admin_repo, token)
     if not tag:
         print(
             "No semver tag with all required fromchat/* images on Docker Hub.",
@@ -125,6 +130,7 @@ def sync_published_compose(
         backend_compose = tmp / "backend.compose.yml"
         backend_compose_prod = tmp / "backend.compose.prod.yml"
         web_compose = tmp / "frontend.compose.yml"
+        admin_compose = tmp / "admin.compose.yml"
         backend_compose.write_bytes(
             fetch_raw_file(backend_repo, tag, "compose.yml", token)
         )
@@ -134,11 +140,16 @@ def sync_published_compose(
         web_compose.write_bytes(
             fetch_raw_file(web_repo, tag, "compose.yml", token)
         )
+        if "admin" in components:
+            admin_compose.write_bytes(
+                fetch_raw_file(admin_repo, tag, "compose.yml", token)
+            )
 
         generate(
             backend_compose=backend_compose,
             backend_compose_prod=backend_compose_prod,
-            frontend_compose=web_compose,
+            frontend_compose=web_compose if "frontend" in components else None,
+            admin_compose=admin_compose if "admin" in components else None,
             tag=tag,
             components=set(components),
             output=output,
@@ -176,10 +187,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--backend-repo", default=DEFAULT_BACKEND_REPO)
     parser.add_argument("--web-repo", default=DEFAULT_WEB_REPO)
+    parser.add_argument("--admin-repo", default=DEFAULT_ADMIN_REPO)
     parser.add_argument(
         "--components",
         default=",".join(DEFAULT_COMPONENTS),
-        help="Comma-separated components (default: backend,frontend,caddy,chat_filter)",
+        help="Comma-separated components (default: backend,frontend,admin,caddy,chat_filter)",
     )
     return parser.parse_args()
 
@@ -199,6 +211,7 @@ def main() -> None:
         output=args.output.resolve(),
         backend_repo=args.backend_repo,
         web_repo=args.web_repo,
+        admin_repo=args.admin_repo,
         token=token,
         components=components,
     )

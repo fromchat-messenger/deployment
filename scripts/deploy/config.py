@@ -114,10 +114,10 @@ def load_settings(paths: ProjectPaths, argv: list[str]) -> DeploySettings:
         if arg in ("-h", "--help"):
             sys.stdout.write(
                 "Usage: deploy.sh [user@host] [deploy_path] [platform] "
-                "[--components backend,frontend,caddy,updater,chat_filter] [--tag TAG]\n"
+                "[--components backend,frontend,admin,caddy,updater,chat_filter] [--tag TAG]\n"
                 "  Interactive component menu when --components is omitted.\n"
                 "  Or set DEPLOYMENT_SERVER in .env\n"
-                "  Paths: FROMCHAT_BACKEND_DIR, FROMCHAT_WEB_DIR, FROMCHAT_UPDATER_DIR\n"
+                "  Paths: FROMCHAT_BACKEND_DIR, FROMCHAT_WEB_DIR, FROMCHAT_ADMIN_DIR, FROMCHAT_UPDATER_DIR\n"
                 "  Saved choices: .deploy-cache/settings.json (--reset to clear)\n"
             )
             raise SystemExit(0)
@@ -177,7 +177,7 @@ def load_settings(paths: ProjectPaths, argv: list[str]) -> DeploySettings:
         elif interactive and sys.stdin.isatty():
             components = select_components_interactive()
         else:
-            components = parse_components_csv("backend,frontend,caddy,chat_filter")
+            components = parse_components_csv("backend,frontend,admin,caddy,chat_filter")
     except KeyboardInterrupt:
         _persist_partial(
             paths,
@@ -205,6 +205,12 @@ def load_settings(paths: ProjectPaths, argv: list[str]) -> DeploySettings:
         sys.stderr.write(
             "Frontend component selected but web repo not found.\n"
             "Set FROMCHAT_WEB_DIR or keep a sibling ../Web with compose.yml.\n"
+        )
+        raise SystemExit(1)
+    if "admin" in components and not paths.admin_dir:
+        sys.stderr.write(
+            "Admin component selected but admin repo not found.\n"
+            "Set FROMCHAT_ADMIN_DIR or keep a sibling ../admin with compose.yml.\n"
         )
         raise SystemExit(1)
     if "caddy" in components and not paths.caddy_build_dir:

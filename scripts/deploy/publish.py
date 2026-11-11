@@ -280,7 +280,7 @@ def _resolve_build_paths(compose_dir: Path, build: dict | str) -> tuple[Path, Pa
 
 
 def discover_image_specs(paths: ProjectPaths) -> list[ImageSpec]:
-    """Collect every compose service with a build: block across backend, web, updater."""
+    """Collect every compose service with a build: block across backend, web, admin, updater."""
     compose_files: list[tuple[Path, Path]] = []
     if paths.backend_dir and (paths.backend_dir / "compose.yml").is_file():
         compose_files.append((paths.backend_dir, paths.backend_dir / "compose.yml"))
@@ -289,11 +289,13 @@ def discover_image_specs(paths: ProjectPaths) -> list[ImageSpec]:
             compose_files.append((paths.backend_dir, prod_compose))
     if paths.web_dir and (paths.web_dir / "compose.yml").is_file():
         compose_files.append((paths.web_dir, paths.web_dir / "compose.yml"))
+    if paths.admin_dir and (paths.admin_dir / "compose.yml").is_file():
+        compose_files.append((paths.admin_dir, paths.admin_dir / "compose.yml"))
     if paths.updater_dir and (paths.updater_dir / "compose.yml").is_file():
         compose_files.append((paths.updater_dir, paths.updater_dir / "compose.yml"))
 
     if not compose_files:
-        ui.error("No compose.yml found in backend, web, or updater repos.")
+        ui.error("No compose.yml found in backend, web, admin, or updater repos.")
         raise SystemExit(1)
 
     specs: list[ImageSpec] = []
@@ -1334,7 +1336,10 @@ def _run(argv: list[str] | None = None) -> None:
         ui.info("Mode: push local images only (--no-build)")
     else:
         ui.info("Platforms: " + PLATFORMS)
-    ui.info("Publishable services are read from compose build: blocks in backend, web, and updater.")
+    ui.info(
+        "Publishable services are read from compose build: blocks in "
+        "backend, web, admin, and updater."
+    )
     ui.info("Tags come from each source repo's git tag on HEAD.")
     ui.info("Default registries: GitHub Packages + Gitea.")
     if saved:
