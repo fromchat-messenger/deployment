@@ -22,6 +22,7 @@ FROMCHAT_IMAGE_SERVICES = frozenset(
         "file_storage",
         "postgres",
         "web",
+        "admin",
         "caddy",
         "updater",
         "chat_filter",
@@ -33,7 +34,7 @@ FROMCHAT_IMAGE_SERVICES = frozenset(
 BACKEND_SERVICES = frozenset(
     {"backend", "messaging", "file_storage", "livekit", "postgres"}
 )
-FRONTEND_SERVICES = frozenset({"web"})
+FRONTEND_SERVICES = frozenset({"web", "admin"})
 UPDATER_SERVICES = frozenset({"updater"})
 CHAT_FILTER_SERVICES = frozenset({"chat_filter"})
 BACKEND_BUILD_SERVICES = frozenset(
@@ -157,6 +158,7 @@ def patch_build_roots(
     *,
     backend_root: Path | None,
     web_root: Path | None,
+    admin_root: Path | None,
     updater_root: Path | None,
 ) -> None:
     for name, cfg in services.items():
@@ -167,6 +169,8 @@ def patch_build_roots(
             _rewrite_build_context(build, backend_root)
         elif name == "web" and web_root:
             _rewrite_build_context(build, web_root)
+        elif name == "admin" and admin_root:
+            _rewrite_build_context(build, admin_root)
         elif name == "updater" and updater_root:
             build["context"] = str(updater_root)
             build["dockerfile"] = "Dockerfile"
@@ -308,12 +312,14 @@ def generate(
     backend_compose: Path | None,
     backend_compose_prod: Path | None = None,
     frontend_compose: Path | None,
+    admin_compose: Path | None = None,
     tag: str,
     components: set[str],
     output: Path,
     keep_build: bool = False,
     backend_root: Path | None = None,
     web_root: Path | None = None,
+    admin_root: Path | None = None,
     updater_root: Path | None = None,
     include_updater: bool = False,
     include_chat_filter: bool = False,
@@ -346,6 +352,8 @@ def generate(
         sources.append(prod_compose)
     if frontend_compose and frontend_compose.is_file():
         sources.append(frontend_compose)
+    if admin_compose and admin_compose.is_file():
+        sources.append(admin_compose)
 
     if not sources and not include_updater and not include_chat_filter:
         raise SystemExit("No compose inputs found.")
@@ -395,6 +403,7 @@ def generate(
             services,
             backend_root=backend_root,
             web_root=web_root,
+            admin_root=admin_root,
             updater_root=updater_root,
         )
 
@@ -410,6 +419,18 @@ def generate(
         ports = web.get("ports")
         if isinstance(ports, list):
             web["ports"] = [p for p in ports if not str(p).startswith("8301:")]
+
+    if include_caddy and "admin" in services:
+        admin = services["admin"]
+        nets = admin.get("networks")
+        if isinstance(nets, list):
+            if "public" not in nets:
+                nets.append("public")
+        else:
+            admin["networks"] = ["public"]
+        ports = admin.get("ports")
+        if isinstance(ports, list):
+            admin["ports"] = [p for p in ports if not str(p).startswith("8310:")]
 
     if not keep_build:
         for cfg in services.values():
@@ -442,6 +463,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--backend-compose", type=Path, default=None)
     parser.add_argument("--backend-compose-prod", type=Path, default=None)
     parser.add_argument("--frontend-compose", type=Path, default=None)
+    parser.add_argument("--admin-compose", type=Path, default=None)
     parser.add_argument("--output", type=Path, default=Path("compose.yml"))
     parser.add_argument(
         "--keep-build",
@@ -450,6 +472,7 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--backend-root", type=Path, default=None)
     parser.add_argument("--web-root", type=Path, default=None)
+    parser.add_argument("--admin-root", type=Path, default=None)
     parser.add_argument("--updater-root", type=Path, default=None)
     parser.add_argument("--include-updater", action="store_true")
     parser.add_argument("--include-chat-filter", action="store_true")
@@ -463,12 +486,14 @@ def main() -> None:
         backend_compose=args.backend_compose,
         backend_compose_prod=args.backend_compose_prod,
         frontend_compose=args.frontend_compose,
+        admin_compose=args.admin_compose,
         tag=args.tag,
         components=components,
         output=args.output,
         keep_build=args.keep_build,
         backend_root=args.backend_root,
         web_root=args.web_root,
+        admin_root=args.admin_root,
         updater_root=args.updater_root,
         include_updater=args.include_updater,
         include_chat_filter=args.include_chat_filter,
